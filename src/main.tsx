@@ -28,8 +28,10 @@ import {
 } from "./lib/modelsDevAutoSync";
 import { initializeWindowActivity } from "@/lib/windowActivity";
 import { initializeInputModality } from "@/lib/inputModality";
+import { initializeContextMenuGuard } from "@/lib/contextMenu";
 
 installGlobalErrorHandlers();
+initializeContextMenuGuard();
 
 // 根据平台添加 body class，便于平台特定样式
 try {

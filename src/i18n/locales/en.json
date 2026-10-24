@@ -4150,7 +4150,30 @@
     "queryFailed": "Query failed",
     "refresh": "Refresh"
   },
+  "dashboard": {
+    "agent": "Agent",
+    "mode": "Mode",
+    "provider": "Active provider",
+    "routeState": "Routing / aggregation",
+    "quota": "Key quota",
+    "directState": "Direct connection",
+    "routeQueue": "Route target · {{count}}",
+    "stackState": "{{members}} providers · {{fallbacks}} fallbacks",
+    "service": "Local router",
+    "running": "Running",
+    "stopped": "Stopped",
+    "activeConnections": "Active connections",
+    "totalRequests": "Total requests",
+    "fallbacks": "Failovers",
+    "degraded": "{{count}} consecutive failures",
+    "open": "Open",
+    "refreshAll": "Refresh all",
+    "startService": "Start service",
+    "startFailed": "Could not start the local router",
+    "refreshed": "Dashboard refreshed"
+  },
   "nav": {
+    "dashboard": "Dashboard",
     "mainLabel": "Main navigation",
     "skipToContent": "Skip to main content",
     "expandSidebar": "Expand sidebar",
@@ -4262,6 +4285,22 @@
       "autoReviewDefaultMain": "Main model reviews itself (default)",
       "autoReviewUnavailable": "The selected model is no longer in the aggregation (the provider was removed or stopped publishing it), so approvals use the default reviewer for now. It comes back once you add it again.",
       "saveFailed": "Failed to save: {{error}}"
+    },
+    "fallback": {
+      "title": "Model fallback chain",
+      "description": "When the primary provider times out, is rate-limited, or returns a server error, try the providers and models you list here in order.",
+      "count": "{{count}} fallback targets",
+      "none": "No fallbacks",
+      "configure": "Configure",
+      "dialogTitle": "Configure model fallback chain",
+      "dialogDescription": "Choose ordered fallbacks for {{model}}. The next target is tried only after the previous one fails.",
+      "primary": "Primary",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
+      "chooseCandidate": "Choose a provider and model",
+      "add": "Add",
+      "saved": "Model fallback chain saved",
+      "saveFailed": "Could not save the model fallback chain"
     },
     "queueMoved": "{{name}} moved to position {{position}}.",
     "status": {

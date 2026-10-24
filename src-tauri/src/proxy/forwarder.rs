@@ -375,6 +375,9 @@ pub struct RequestForwarder {
     /// Stack 模型的请求（`mode::stack`）：挂在结构体上，整流器重试再次调用 `forward()` 时照样
     /// 生效。见 [`Self::routing_state_enabled`]。
     stack_request: bool,
+    /// Upstream model override for each Stack attempt, aligned with the
+    /// provider list. Empty for ordinary routed requests.
+    stack_attempt_models: Vec<String>,
 }
 
 impl RequestForwarder {
@@ -490,6 +493,7 @@ impl RequestForwarder {
             ),
             max_attempts,
             stack_request: false,
+            stack_attempt_models: Vec::new(),
         }
     }
 
@@ -499,11 +503,22 @@ impl RequestForwarder {
         self
     }
 
+    pub fn stack_attempt_models(mut self, models: Vec<String>) -> Self {
+        self.stack_attempt_models = models;
+        self
+    }
+
     /// 这个请求读写路由状态吗：熔断器（许可、结果、健康度）、「正在使用」、代理统计
     /// （总数、成功率、故障转移次数、最近错误、活跃连接）、故障转移切换。Stack 模型的请求
     /// 和普通路由完全分开，一律不碰；只有用量日志照常按供应商记。以后新增路由状态也先问它。
     fn routing_state_enabled(&self) -> bool {
         !self.stack_request
+    }
+
+    /// Stack fallback chains reuse provider health/circuit breakers even though
+    /// they deliberately avoid global route, status and failover mutation.
+    fn provider_health_enabled(&self) -> bool {
+        self.routing_state_enabled() || self.stack_attempt_models.len() > 1
     }
 
     /// 请求体里的模型名已经是这家的上游名（Stack 模型的请求）：不按角色映射、不换成行里配置
@@ -630,6 +645,10 @@ impl RequestForwarder {
             connection_guard: None,
         };
         if !self.routing_state_enabled() {
+            if self.provider_health_enabled() {
+                self.record_success_result(&provider.id, app_type_str, used_half_open_permit)
+                    .await;
+            }
             return result;
         }
 
@@ -677,7 +696,7 @@ impl RequestForwarder {
         error: &ProxyError,
         last_error: String,
     ) {
-        if !self.routing_state_enabled() {
+        if !self.provider_health_enabled() {
             return;
         }
         let _ = self
@@ -690,7 +709,9 @@ impl RequestForwarder {
                 Some(error.to_string()),
             )
             .await;
-        self.status.write().await.last_error = Some(last_error);
+        if self.routing_state_enabled() {
+            self.status.write().await.last_error = Some(last_error);
+        }
     }
 
     /// 不计入熔断的失败（客户端错误、整流后仍被拒）：只释放 HalfOpen 名额，这个请求记为失败。
@@ -701,10 +722,12 @@ impl RequestForwarder {
         app_type_str: &str,
         used_half_open_permit: bool,
     ) -> ForwardError {
-        if self.routing_state_enabled() {
+        if self.provider_health_enabled() {
             self.router
                 .release_permit_neutral(&provider.id, app_type_str, used_half_open_permit)
                 .await;
+        }
+        if self.routing_state_enabled() {
             self.record_failed_request(error.to_string()).await;
         }
         ForwardError {
@@ -810,10 +833,10 @@ impl RequestForwarder {
         let mut attempted_providers = 0usize;
 
         // 单 Provider 场景下跳过熔断器检查（故障转移关闭时）；Stack 模型的请求不碰熔断器。
-        let bypass_circuit_breaker = providers.len() == 1 || !self.routing_state_enabled();
+        let bypass_circuit_breaker = providers.len() == 1;
 
         // 依次尝试每个供应商
-        for provider in providers.iter() {
+        for (attempt_index, provider) in providers.iter().enumerate() {
             // 整流器重试标记：每个 provider 独立持有，避免标记跨 provider 短路故障转移
             // —— 首家 provider 整流后被 5xx/timeout 击落时，下家仍能用整流后的请求体走整流流程
             let mut rectifier_retried = false;
@@ -863,6 +886,9 @@ impl RequestForwarder {
                 } else {
                     body.clone()
                 };
+            if let Some(model) = self.stack_attempt_models.get(attempt_index) {
+                provider_body["model"] = Value::String(model.clone());
+            }
 
             attempted_providers += 1;
 
@@ -1295,7 +1321,11 @@ impl RequestForwarder {
                     // 先分类错误，决定是否计入 provider 健康度
                     // —— NonRetryable / ClientAbort 是客户端层错误，无论换哪家 provider 都会被拒绝，
                     //    不应污染熔断器和数据库健康度（与 release_permit_neutral 同语义）。
-                    let category = self.categorize_proxy_error(&e, provider);
+                    let category = if self.stack_request && self.stack_attempt_models.len() > 1 {
+                        self.categorize_stack_fallback_error(&e)
+                    } else {
+                        self.categorize_proxy_error(&e, provider)
+                    };
 
                     match category {
                         ErrorCategory::Retryable => {
@@ -3348,6 +3378,24 @@ impl RequestForwarder {
             // 无可用供应商：所有供应商都试过了，无法重试
             ProxyError::NoAvailableProvider => ErrorCategory::NonRetryable,
             // 其他错误（数据库/内部错误等）：不是换供应商能解决的问题
+            _ => ErrorCategory::NonRetryable,
+        }
+    }
+
+    /// Aggregated-model fallback is intentionally narrower than route-mode
+    /// failover. Authentication, authorization, model-not-found and malformed
+    /// request errors do not move the request to another billed account.
+    fn categorize_stack_fallback_error(&self, error: &ProxyError) -> ErrorCategory {
+        match error {
+            ProxyError::Timeout(_)
+            | ProxyError::ForwardFailed(_)
+            | ProxyError::StreamIdleTimeout(_)
+            | ProxyError::ProviderUnhealthy(_) => ErrorCategory::Retryable,
+            ProxyError::UpstreamError { status, .. } => match *status {
+                408 | 409 | 425 | 429 => ErrorCategory::Retryable,
+                value if value >= 500 => ErrorCategory::Retryable,
+                _ => ErrorCategory::NonRetryable,
+            },
             _ => ErrorCategory::NonRetryable,
         }
     }

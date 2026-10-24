@@ -80,8 +80,11 @@ fn desktop_needs_routing_error() -> AppError {
 }
 
 pub fn official_provider_supports_proxy_takeover(app_type: &AppType, provider: &Provider) -> bool {
-    matches!(app_type, AppType::Codex)
-        && crate::proxy::providers::is_codex_official_provider(provider)
+    // Official API keys and OAuth subscriptions are proxied like any other
+    // provider. Account-specific request validation still happens inside the
+    // adapter and must never reuse credentials across accounts.
+    let _ = (app_type, provider);
+    true
 }
 
 /// 统一会话开关变更后，立即按新开关状态重写当前官方 Codex 供应商的选路（关键字段），

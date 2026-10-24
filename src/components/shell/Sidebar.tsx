@@ -16,6 +16,7 @@ import {
   KeyRound,
   Layers,
   LayoutGrid,
+  LayoutDashboard,
   Route,
   Server,
   Settings,
@@ -273,6 +274,7 @@ function MainDirectory({
     trailingLabel?: string;
     alert?: string;
   }[] = [
+    { page: "dashboard", label: t("nav.dashboard"), icon: LayoutDashboard },
     { page: "mcp", label: "MCP", icon: Server },
     { page: "skills", label: "Skills", icon: SkillsIcon },
     { page: "prompts", label: t("nav.prompts"), icon: BookOpen },

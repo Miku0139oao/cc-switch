@@ -160,6 +160,7 @@ function EnterBody({
   // 官方账号只能做聚合的默认、不能做成员（Codex）：选了别家，它的模型就进不了聚合
   const officialLeftOut =
     target === "stack" &&
+    app === "codex" &&
     pickedProvider !== undefined &&
     !isOfficialAccount(app, pickedProvider) &&
     eligible.some((p) => isOfficialAccount(app, p));

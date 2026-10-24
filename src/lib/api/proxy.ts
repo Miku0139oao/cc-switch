@@ -11,6 +11,9 @@ import type {
   CodexDaemonRestartOutcome,
   AppModeView,
   StartupAttachFailure,
+  StackFallbackTarget,
+  AppCapabilities,
+  DashboardSnapshot,
 } from "@/types/proxy";
 
 export const proxyApi = {
@@ -34,6 +37,14 @@ export const proxyApi = {
   // 获取代理服务器状态
   async getProxyStatus(): Promise<ProxyStatus> {
     return invoke("get_proxy_status");
+  },
+
+  async getAppCapabilities(): Promise<AppCapabilities[]> {
+    return invoke("get_app_capabilities");
+  },
+
+  async getDashboardSnapshot(): Promise<DashboardSnapshot> {
+    return invoke("get_dashboard_snapshot");
   },
 
   // ========== 接管状态 API ==========
@@ -104,6 +115,18 @@ export const proxyApi = {
     enabled: boolean,
   ): Promise<ProxyStackNotice | null> {
     return invoke("set_proxy_stack_member", { appType, providerId, enabled });
+  },
+
+  async setStackFallbackChain(
+    appType: string,
+    modelId: string,
+    targets: StackFallbackTarget[],
+  ): Promise<void> {
+    return invoke("set_stack_fallback_chain", {
+      appType,
+      modelId,
+      targets,
+    });
   },
 
   // Codex 聚合的模型被别的模型目录挡住时，改用 CC Switch 生成的目录（去掉指向别的文件的

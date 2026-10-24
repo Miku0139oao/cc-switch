@@ -4150,7 +4150,30 @@
     "queryFailed": "クエリに失敗しました",
     "refresh": "更新"
   },
+  "dashboard": {
+    "agent": "エージェント",
+    "mode": "モード",
+    "provider": "使用中のプロバイダー",
+    "routeState": "ルーティング／集約",
+    "quota": "主要クォータ",
+    "directState": "直接接続",
+    "routeQueue": "ルート先 · {{count}}",
+    "stackState": "{{members}} プロバイダー · {{fallbacks}} フォールバック",
+    "service": "ローカルルーター",
+    "running": "実行中",
+    "stopped": "停止",
+    "activeConnections": "アクティブ接続",
+    "totalRequests": "総リクエスト",
+    "fallbacks": "フェイルオーバー",
+    "degraded": "{{count}} 回連続失敗",
+    "open": "開く",
+    "refreshAll": "すべて更新",
+    "startService": "サービスを開始",
+    "startFailed": "ローカルルーターを開始できませんでした",
+    "refreshed": "ダッシュボードを更新しました"
+  },
   "nav": {
+    "dashboard": "ダッシュボード",
     "mainLabel": "メインナビゲーション",
     "skipToContent": "メインコンテンツへスキップ",
     "expandSidebar": "サイドバーを展開",
@@ -4262,6 +4285,22 @@
       "autoReviewDefaultMain": "メインモデル自身が承認（既定）",
       "autoReviewUnavailable": "選択したモデルは集約に含まれなくなったため（プロバイダーの削除またはモデルの公開停止）、承認は一時的に既定のモデルを使います。再び追加すると自動で戻ります。",
       "saveFailed": "保存に失敗しました：{{error}}"
+    },
+    "fallback": {
+      "title": "モデルフォールバックチェーン",
+      "description": "プライマリプロバイダーがタイムアウト、レート制限、サーバーエラーになった場合、指定したプロバイダーとモデルを順番に試します。",
+      "count": "{{count}} 件のフォールバック",
+      "none": "フォールバックなし",
+      "configure": "設定",
+      "dialogTitle": "モデルフォールバックチェーンを設定",
+      "dialogDescription": "{{model}} のフォールバックを順番に指定します。前のターゲットが失敗した場合だけ次を試します。",
+      "primary": "プライマリ",
+      "moveUp": "上へ",
+      "moveDown": "下へ",
+      "chooseCandidate": "プロバイダーとモデルを選択",
+      "add": "追加",
+      "saved": "モデルフォールバックチェーンを保存しました",
+      "saveFailed": "モデルフォールバックチェーンを保存できませんでした"
     },
     "queueMoved": "{{name}} を {{position}} 番目に移動しました。",
     "status": {

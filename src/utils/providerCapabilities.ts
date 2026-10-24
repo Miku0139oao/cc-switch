@@ -121,14 +121,10 @@ export function supportsOfficialProxyTakeover(
   appId: AppId,
   provider: Pick<Provider, "id" | "category" | "meta" | "settingsConfig">,
 ): boolean {
-  const identity = resolveCodexOfficialIdentity(appId, provider);
-  if (!identity || identity === "api_key") return false;
-  if (
-    provider.id === CODEX_OFFICIAL_PROVIDER_ID ||
-    identity === "managed_account"
-  ) {
-    return true;
-  }
+  // Official subscriptions and API-key cards are proxyable. The adapter must
+  // validate which account a request belongs to before attaching credentials.
+  void appId;
+  void provider;
   return true;
 }
 

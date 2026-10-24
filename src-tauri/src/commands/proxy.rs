@@ -3,6 +3,7 @@
 //! 提供前端调用的 API 接口
 
 use crate::error::AppError;
+use crate::AppType;
 use crate::proxy::types::*;
 use crate::proxy::{CircuitBreakerConfig, CircuitBreakerStats};
 use crate::store::AppState;
@@ -202,6 +203,24 @@ pub async fn set_proxy_stack_member(
     result
 }
 
+/// Replace an aggregated model's explicit fallback chain.
+#[tauri::command]
+pub async fn set_stack_fallback_chain(
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+    model_id: String,
+    targets: Vec<crate::mode::state::StackFallbackTarget>,
+) -> Result<(), String> {
+    let app = require_mode_app(&app_type)?;
+    crate::mode::controller::set_stack_fallback_chain(
+        state.inner(),
+        &app,
+        &model_id,
+        targets,
+    )
+    .await
+}
+
 /// Codex 聚合的模型被别的模型目录挡住时，改用 CC Switch 生成的目录（去掉指向别的文件的
 /// `model_catalog_json`）。返回之后还剩的提示。
 #[tauri::command]
@@ -215,6 +234,71 @@ pub async fn adopt_codex_stack_catalog(
 #[tauri::command]
 pub async fn get_proxy_status(state: tauri::State<'_, AppState>) -> Result<ProxyStatus, String> {
     state.proxy_service.get_status().await
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardAgentState {
+    pub app_type: String,
+    pub mode: String,
+    pub attached: bool,
+    pub route_provider_id: Option<String>,
+    pub direct_provider_id: Option<String>,
+    pub stack_members: usize,
+    pub fallback_count: usize,
+    pub launch_scoped: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardSnapshot {
+    pub service: ProxyStatus,
+    pub agents: Vec<DashboardAgentState>,
+}
+
+#[tauri::command]
+pub fn get_app_capabilities() -> Vec<crate::mode::capabilities::AppCapabilities> {
+    crate::mode::capabilities::all()
+}
+
+/// Compact dashboard view. It intentionally returns provider ids and health /
+/// stack metadata only; credentials and provider request config never cross
+/// this interface.
+#[tauri::command]
+pub async fn get_dashboard_snapshot(
+    state: tauri::State<'_, AppState>,
+) -> Result<DashboardSnapshot, String> {
+    let service = state.proxy_service.get_status().await?;
+    let mut agents = Vec::new();
+    for app in AppType::all() {
+        let mode = crate::mode::current::mode_state(&app);
+        let stack = crate::mode::state::stack(
+            &crate::live::engine::DeviceStore::for_device(),
+            app.as_str(),
+        )
+        .map_err(|error| error.to_string())?;
+        let direct_provider_id =
+            crate::mode::current::provider_for(&state.db, &app, crate::mode::current::Purpose::Direct)
+                .map_err(|error| error.to_string())?;
+        let mode_name = if !mode.is_proxy() {
+            "direct"
+        } else if crate::mode::stack::supports_stack(&app) && stack.enabled {
+            "stack"
+        } else {
+            "route"
+        };
+        agents.push(DashboardAgentState {
+            app_type: app.as_str().to_string(),
+            mode: mode_name.to_string(),
+            attached: mode.attached,
+            route_provider_id: mode.proxy_route,
+            direct_provider_id,
+            stack_members: stack.members.len(),
+            fallback_count: stack.fallbacks.values().map(Vec::len).sum(),
+            launch_scoped: crate::mode::capabilities::for_app(&app).launch_scoped,
+        });
+    }
+    Ok(DashboardSnapshot { service, agents })
 }
 
 /// 获取代理配置

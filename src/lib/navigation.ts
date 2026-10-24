@@ -15,6 +15,7 @@ export type AppPage =
   | "hermesMemory";
 
 export type GlobalPage =
+  | "dashboard"
   | "usage"
   | "auth"
   | "mcp"
@@ -51,6 +52,7 @@ const APP_PAGES: AppPage[] = [
 ];
 
 const GLOBAL_PAGES: GlobalPage[] = [
+  "dashboard",
   "usage",
   "auth",
   "mcp",
@@ -103,9 +105,9 @@ export function appPageBelongsTo(page: AppPage, app: AppId): boolean {
 
 export function readStoredView(): View {
   try {
-    return parseView(localStorage.getItem(VIEW_STORAGE_KEY)) ?? "providers";
+    return parseView(localStorage.getItem(VIEW_STORAGE_KEY)) ?? "dashboard";
   } catch {
-    return "providers";
+    return "dashboard";
   }
 }
 

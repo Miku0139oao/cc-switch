@@ -4151,7 +4151,30 @@
     "queryFailed": "查詢失敗",
     "refresh": "重新整理"
   },
+  "dashboard": {
+    "agent": "Agent",
+    "mode": "模式",
+    "provider": "目前供應商",
+    "routeState": "路由／聚合狀態",
+    "quota": "關鍵額度",
+    "directState": "直接連線",
+    "routeQueue": "路由目標 · {{count}} 個",
+    "stackState": "{{members}} 家 · {{fallbacks}} 段備援",
+    "service": "本機路由",
+    "running": "執行中",
+    "stopped": "已停止",
+    "activeConnections": "活躍連線",
+    "totalRequests": "總請求",
+    "fallbacks": "故障切換",
+    "degraded": "連續失敗 {{count}} 次",
+    "open": "前往",
+    "refreshAll": "重新整理全部",
+    "startService": "啟動服務",
+    "startFailed": "無法啟動本機路由",
+    "refreshed": "控制台資料已重新整理"
+  },
   "nav": {
+    "dashboard": "主控制台",
     "mainLabel": "主導覽",
     "skipToContent": "跳到主要內容",
     "expandSidebar": "展開側欄",
@@ -4263,6 +4286,22 @@
       "autoReviewDefaultMain": "主模型自己審批（預設）",
       "autoReviewUnavailable": "所選模型已不在聚合名單裡（成員被移除或模型不再發布），審批暫時使用預設模型；加回來後自動恢復。",
       "saveFailed": "儲存失敗：{{error}}"
+    },
+    "fallback": {
+      "title": "模型備援鏈",
+      "description": "主供應商遇到逾時、限流或伺服器錯誤時，依序嘗試你指定的其他供應商與模型。",
+      "count": "{{count}} 段備援",
+      "none": "未設定備援",
+      "configure": "設定",
+      "dialogTitle": "設定模型備援鏈",
+      "dialogDescription": "為 {{model}} 指定有序備援；第一個目標失敗後才會嘗試下一個。",
+      "primary": "主要",
+      "moveUp": "上移",
+      "moveDown": "下移",
+      "chooseCandidate": "選擇供應商與模型",
+      "add": "加入",
+      "saved": "模型備援鏈已儲存",
+      "saveFailed": "儲存模型備援鏈失敗"
     },
     "queueMoved": "{{name}} 移到第 {{position}} 位。",
     "status": {

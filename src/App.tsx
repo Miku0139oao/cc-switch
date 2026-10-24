@@ -120,6 +120,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { SessionManagerPage } from "@/components/sessions/SessionManagerPage";
+import { DashboardPage } from "@/components/dashboard/DashboardPage";
 import {
   useDisableCurrentOmo,
   useDisableCurrentOmoSlim,
@@ -1629,6 +1630,15 @@ function App() {
 
   const renderGlobalPage = () => {
     switch (currentView) {
+      case "dashboard":
+        return (
+          <DashboardPage
+            onOpenApp={(app) => {
+              setActiveApp(app);
+              setCurrentView("providers");
+            }}
+          />
+        );
       case "usage":
         return (
           <UsagePage

@@ -129,13 +129,30 @@ pub struct StackState {
     /// 客户端会一直带着选中过的 id，key 改了指向，旧 id 就会被悄悄发到另一家。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub keys: BTreeMap<String, String>,
+    /// Model-level fallback chains keyed by the model id published to the client.
+    /// The primary target remains the Stack member encoded in that id; these are
+    /// only the explicit ordered fallbacks.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fallbacks: BTreeMap<String, Vec<StackFallbackTarget>>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
 
+/// One explicit fallback for an aggregated model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StackFallbackTarget {
+    pub provider_id: String,
+    pub upstream_model: String,
+}
+
 impl StackState {
     pub fn is_empty(&self) -> bool {
-        !self.enabled && self.members.is_empty() && self.keys.is_empty() && self.extra.is_empty()
+        !self.enabled
+            && self.members.is_empty()
+            && self.keys.is_empty()
+            && self.fallbacks.is_empty()
+            && self.extra.is_empty()
     }
 
     /// 这家在登记簿里的 key。
@@ -148,6 +165,17 @@ impl StackState {
 
     pub fn is_member(&self, provider_id: &str) -> bool {
         self.members.iter().any(|id| id == provider_id)
+    }
+
+    /// Drop fallbacks that no longer belong to an active Stack member. Kept
+    /// fallback chains retain their order.
+    pub fn prune_fallbacks(&mut self) {
+        let members: std::collections::HashSet<_> =
+            self.members.iter().map(String::as_str).collect();
+        self.fallbacks.retain(|_, targets| {
+            targets.retain(|target| members.contains(target.provider_id.as_str()));
+            !targets.is_empty()
+        });
     }
 }
 

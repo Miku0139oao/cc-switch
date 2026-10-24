@@ -1740,6 +1740,8 @@ pub fn run() {
             commands::exit_proxy_apps_in_mode,
             commands::get_direct_provider,
             commands::get_proxy_status,
+            commands::get_app_capabilities,
+            commands::get_dashboard_snapshot,
             commands::get_proxy_config,
             commands::update_proxy_config,
             // Global & Per-App Config
@@ -1756,6 +1758,7 @@ pub fn run() {
             commands::switch_proxy_provider,
             commands::get_proxy_stack,
             commands::set_proxy_stack_member,
+            commands::set_stack_fallback_chain,
             commands::adopt_codex_stack_catalog,
             commands::restart_codex_app_server_daemon,
             commands::acknowledge_codex_stale_clients,

@@ -8,6 +8,7 @@ import type {
   AppProxyConfig,
   ProxyStackWriteError,
   ProxyTakeoverStatus,
+  StackFallbackTarget,
 } from "@/types/proxy";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { getAppLabel } from "@/config/appConfig";
@@ -153,6 +154,34 @@ export function useSetProxyStackMember() {
     onSettled: (_data, _error, variables) => {
       queryClient.invalidateQueries({
         queryKey: ["providers", variables.appType],
+      });
+    },
+  });
+}
+
+export function useSetStackFallbackChain() {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: ({
+      appType,
+      modelId,
+      targets,
+    }: {
+      appType: string;
+      modelId: string;
+      targets: StackFallbackTarget[];
+    }) => proxyApi.setStackFallbackChain(appType, modelId, targets),
+    onSuccess: (_data, variables) => {
+      toast.success(t("mode.fallback.saved"), { closeButton: true });
+      queryClient.invalidateQueries({
+        queryKey: ["providers", variables.appType],
+      });
+    },
+    onError: (error: unknown) => {
+      toast.error(t("mode.fallback.saveFailed"), {
+        description: extractErrorMessage(error),
       });
     },
   });

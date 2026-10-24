@@ -833,22 +833,7 @@ async fn enter_locked(
         rewrite_label(rewritten)
     );
     state.proxy_service.set_active_target(app, &route).await;
-    warn_if_official_route(state, app, &route).await;
     Ok(())
-}
-
-async fn warn_if_official_route(state: &AppState, app: &AppType, route: &Provider) {
-    if route.category.as_deref() == Some("official")
-        && !crate::services::provider::official_provider_supports_proxy_takeover(app, route)
-    {
-        state
-            .proxy_service
-            .emit(
-                "proxy-official-warning",
-                json!({ "appType": app.as_str(), "providerName": route.name }),
-            )
-            .await;
-    }
 }
 
 /// 退出代理模式：客户端写回直连指针的供应商，路由保留。
@@ -1189,16 +1174,10 @@ pub async fn set_route(
     })
 }
 
-/// 代理模式下不能切到不支持代理的官方供应商（Codex 官方账号走客户端自己的登录，除外）。
+/// Official subscriptions are proxyable too. Keep this guard as a single
+/// transition hook for future account-specific preflight checks.
 pub fn reject_unsupported_official(app: &AppType, provider: &Provider) -> Result<(), String> {
-    if provider.category.as_deref() == Some("official")
-        && !crate::services::provider::official_provider_supports_proxy_takeover(app, provider)
-    {
-        return Err(
-            "代理模式下不能切换到官方供应商 (Cannot switch to an official provider in proxy mode)"
-                .to_string(),
-        );
-    }
+    let _ = (app, provider);
     Ok(())
 }
 
@@ -1221,17 +1200,14 @@ impl StackWriteError {
     }
 }
 
-/// 能不能加进 Stack。不能是官方账号：Claude 官方订阅本来就不进代理；Codex 官方可以做路由，
-/// 但它靠客户端自己的登录做账号校验，不能当 Stack 目标。Codex 的行还要能解析：它的模型要
-/// 写进目录。
+/// Codex official rows validate the inbound account and therefore remain
+/// default-only. Other official subscriptions can be ordinary Stack members;
+/// their adapter is responsible for using the correct account credentials.
 fn check_stack_member(app: &AppType, provider: &Provider) -> Result<(), String> {
-    let official = match app {
-        AppType::Codex => codex_direct::is_official(provider),
-        _ => provider.category.as_deref() == Some("official"),
-    };
-    if official {
+    if matches!(app, AppType::Codex) && codex_direct::is_official(provider) {
         return Err(
-            "官方账号不能加入聚合 (An official account cannot join the aggregation)".to_string(),
+            "Codex 官方账号只能作为聚合默认供应商，不能加入成员链 (A Codex official account can only be the aggregation default)"
+                .to_string(),
         );
     }
     match app {
@@ -1326,6 +1302,7 @@ async fn set_stack_member_locked(
             );
         }
         next.members.retain(|id| id != provider_id);
+        next.prune_fallbacks();
     }
     if next == current {
         return Ok(());
@@ -1371,6 +1348,11 @@ pub fn stack_views(state: &AppState, app: &AppType) -> Result<StackView, String>
         AppType::Codex => codex_direct::stack_subagent_choices(&members),
         _ => Vec::new(),
     };
+    let mut fallbacks = stack.fallbacks.clone();
+    fallbacks.retain(|model, targets| {
+        targets.retain(|target| stack.is_member(&target.provider_id));
+        !targets.is_empty() && members.iter().any(|member| member.model_ids.contains(model))
+    });
     Ok(StackView {
         active: mode.is_proxy() && stack.enabled,
         members: stack::member_views(app, &members),
@@ -1379,7 +1361,86 @@ pub fn stack_views(state: &AppState, app: &AppType) -> Result<StackView, String>
         stale_clients: None,
         stale_revision: None,
         subagent_models,
+        fallbacks,
     })
+}
+
+/// Replace one aggregated model's explicit fallback chain. These chains are
+/// model-scoped and never mutate the route-mode failover queue or global route.
+pub async fn set_stack_fallback_chain(
+    state: &AppState,
+    app: &AppType,
+    model_id: &str,
+    targets: Vec<crate::mode::state::StackFallbackTarget>,
+) -> Result<(), String> {
+    if !stack::supports_stack(app) {
+        return Err(format!("{} 不支持聚合模式", app.as_str()));
+    }
+    let _guard = lock_settled(state, app).await.map_err(err)?;
+    let current = settled_stack(app)?;
+    let members = stack::members(
+        &state.db,
+        app,
+        &current,
+        current::mode_state(app).proxy_route.as_deref(),
+    )
+    .map_err(err)?;
+    let inventory = stack::member_views(app, &members);
+    if !inventory.iter().any(|member| {
+        member
+            .models
+            .iter()
+            .any(|model| model.id == model_id)
+    }) {
+        return Err(format!("聚合模型不存在: {model_id}"));
+    }
+
+    let mut next = current.clone();
+    let mut seen = std::collections::HashSet::new();
+    let mut normalized = Vec::with_capacity(targets.len());
+    for target in targets {
+        let provider_id = target.provider_id.trim();
+        let upstream_model = target.upstream_model.trim();
+        if !current.is_member(provider_id) {
+            return Err(format!("fallback 供应商不在聚合名单中: {provider_id}"));
+        }
+        if upstream_model.is_empty() {
+            return Err("fallback 模型不能为空".to_string());
+        }
+        let pair = (provider_id.to_string(), upstream_model.to_string());
+        if !seen.insert(pair.clone()) {
+            return Err("fallback 目标不能重复".to_string());
+        }
+        normalized.push(crate::mode::state::StackFallbackTarget {
+            provider_id: pair.0,
+            upstream_model: pair.1,
+        });
+    }
+    if normalized.is_empty() {
+        next.fallbacks.remove(model_id);
+    } else {
+        next.fallbacks.insert(model_id.to_string(), normalized);
+    }
+    if next == current {
+        return Ok(());
+    }
+
+    match attached_route(state, app)? {
+        Some((mode, route)) => {
+            let live_now = LiveNow::of(state, app, &mode)?;
+            write_proxy(state, app, op::STACK, &route, &live_now, mode, Some(next))
+                .await
+                .map(|_| ())
+        }
+        None => commit_state(
+            state,
+            app,
+            &PendingTarget {
+                stack: Some(next),
+                ..PendingTarget::default()
+            },
+        ),
+    }
 }
 
 /// [`stack_views`] 再加上 Codex 客户端是否可能缓存旧登录或模型列表（要读进程表，放到阻塞线程

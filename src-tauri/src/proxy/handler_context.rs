@@ -73,6 +73,9 @@ pub struct RequestContext {
     pub copilot_optimizer_config: CopilotOptimizerConfig,
     /// Stack 模型的请求（`mode::stack`）：直达 Stack 里的那一家，不读也不写任何路由状态。
     pub is_stack: bool,
+    /// Per-attempt upstream models for a Stack fallback chain. Kept aligned
+    /// with `providers`; ordinary routed requests leave this empty.
+    stack_attempt_models: Vec<String>,
 }
 
 impl RequestContext {
@@ -125,12 +128,19 @@ impl RequestContext {
         );
 
         let is_stack = stack.is_some();
-        let (provider, providers, current_provider_id, request_model) = match stack {
+        let (provider, providers, current_provider_id, request_model, stack_attempt_models) =
+            match stack {
             Some(target) => {
                 // Stack 模型：只发往 Stack 里的那一家，不读代理路由、不经熔断器选家。按「单家、
                 // 不转移」处理：换成有效副本，转发和读响应两个阶段都从这里取，超时和重试
                 // 跟着关掉（见 `create_forwarder`）。
-                app_config.auto_failover_enabled = false;
+                app_config.auto_failover_enabled = !target.fallbacks.is_empty();
+                let mut providers = vec![target.provider.clone()];
+                let mut attempt_models = vec![target.upstream_model.clone()];
+                for fallback in target.fallbacks {
+                    providers.push(fallback.provider);
+                    attempt_models.push(fallback.upstream_model);
+                }
                 log::debug!(
                     "[{}] Stacked model {} → provider {}, upstream model {}, session: {}",
                     tag,
@@ -141,9 +151,10 @@ impl RequestContext {
                 );
                 (
                     target.provider.clone(),
-                    vec![target.provider.clone()],
+                    providers,
                     target.provider.id,
                     target.original_model,
+                    attempt_models,
                 )
             }
             None => {
@@ -200,7 +211,13 @@ impl RequestContext {
                     providers.len(),
                     session_id
                 );
-                (provider, providers, current_provider_id, request_model)
+                (
+                    provider,
+                    providers,
+                    current_provider_id,
+                    request_model,
+                    Vec::new(),
+                )
             }
         };
 
@@ -221,6 +238,7 @@ impl RequestContext {
             optimizer_config,
             copilot_optimizer_config,
             is_stack,
+            stack_attempt_models,
         })
     }
 
@@ -291,6 +309,7 @@ impl RequestContext {
             max_retries,
         )
         .stack_request(self.is_stack)
+        .stack_attempt_models(self.stack_attempt_models.clone())
     }
 
     /// 获取 Provider 列表（用于故障转移）

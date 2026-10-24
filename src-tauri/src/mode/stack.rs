@@ -630,6 +630,14 @@ pub struct StackTarget {
     pub upstream_model: String,
     /// 客户端发来的带前缀 id（只用于日志展示）。
     pub original_model: String,
+    /// Explicit fallbacks in user-configured order.
+    pub fallbacks: Vec<ResolvedFallback>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedFallback {
+    pub provider: Provider,
+    pub upstream_model: String,
 }
 
 /// 带保留前缀的 id 为什么解不出来。
@@ -720,11 +728,49 @@ pub fn resolve(
             model_part.to_string()
         }
     });
+    let fallbacks = resolve_fallbacks(db, app, &stack, model, &provider.id)?;
     Ok(Resolved::Hit(Box::new(StackTarget {
         provider,
         upstream_model,
         original_model: model.to_string(),
+        fallbacks,
     })))
+}
+
+fn resolve_fallbacks(
+    db: &Database,
+    app: &AppType,
+    stack: &StackState,
+    published_model: &str,
+    primary_provider_id: &str,
+) -> Result<Vec<ResolvedFallback>, AppError> {
+    let mut resolved = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for target in stack
+        .fallbacks
+        .get(published_model)
+        .into_iter()
+        .flatten()
+    {
+        if !stack.is_member(&target.provider_id)
+            || !seen.insert((target.provider_id.clone(), target.upstream_model.clone()))
+        {
+            continue;
+        }
+        if target.provider_id == primary_provider_id
+            && target.upstream_model.trim().is_empty()
+        {
+            continue;
+        }
+        let Some(provider) = db.get_provider_by_id(&target.provider_id, app.as_str())? else {
+            continue;
+        };
+        resolved.push(ResolvedFallback {
+            provider,
+            upstream_model: target.upstream_model.clone(),
+        });
+    }
+    Ok(resolved)
 }
 
 /// Claude Desktop 的数字 id：先按名单顺序在发布出去的成员（路由那家以外）里找，和
@@ -756,6 +802,13 @@ fn resolve_desktop(
                 provider: member.provider.clone(),
                 upstream_model: found.upstream,
                 original_model: model.to_string(),
+                fallbacks: resolve_fallbacks(
+                    db,
+                    app,
+                    &stack,
+                    model,
+                    &member.provider.id,
+                )?,
             })));
         }
     }
@@ -788,6 +841,17 @@ pub struct StackMemberView {
     /// 这家不做默认、只做成员时发布几个模型。换默认的预览用它：现在的默认那家（Codex、
     /// Claude Desktop）`model_ids` 为空，换走后它的模型才发布。
     pub member_models: usize,
+    /// Flattened model inventory for the fallback editor. Includes models owned
+    /// by the route member even when they are not published with a prefix.
+    pub models: Vec<StackModelView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StackModelView {
+    pub id: String,
+    pub upstream_model: String,
+    pub display_name: String,
 }
 
 /// 给前端：Codex 聚合面板「子代理模型」下拉的一项（见 `codex_direct::stack_subagent_choices`）。
@@ -834,20 +898,61 @@ pub struct StackView {
     /// Codex：聚合面板「子代理模型」下拉的选项，发布 Stack 模型的成员按名单顺序。
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub subagent_models: Vec<StackSubagentModel>,
+    /// Explicit fallback chains keyed by the model id published to the client.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub fallbacks: std::collections::BTreeMap<String, Vec<state::StackFallbackTarget>>,
 }
 
 pub fn member_views(app: &AppType, members: &[Member]) -> Vec<StackMemberView> {
     members
         .iter()
-        .map(|member| StackMemberView {
-            provider_id: member.provider.id.clone(),
-            model_ids: member.model_ids.clone(),
-            route: member.route,
-            member_models: if member.route {
-                model_ids_of(app, &member.key, &member.provider, false).len()
-            } else {
-                member.model_ids.len()
-            },
+        .map(|member| {
+            let all_ids = model_ids_of(app, &member.key, &member.provider, false);
+            let models = match app {
+                AppType::Claude => claude_models(&member.key, &member.provider)
+                    .into_iter()
+                    .map(|model| StackModelView {
+                        id: model.id,
+                        upstream_model: strip_one_m_suffix_for_upstream(&model.upstream)
+                            .to_string(),
+                        display_name: model.display_name,
+                    })
+                    .collect(),
+                AppType::ClaudeDesktop => desktop_models(&member.key, &member.provider)
+                    .into_iter()
+                    .map(|model| StackModelView {
+                        id: model.id,
+                        upstream_model: model.upstream,
+                        display_name: model.label,
+                    })
+                    .collect(),
+                _ => all_ids
+                    .iter()
+                    .map(|id| {
+                        let upstream_model = id
+                            .split_once(CODEX_SEPARATOR)
+                            .map(|(_, model)| model)
+                            .unwrap_or(id)
+                            .to_string();
+                        StackModelView {
+                            id: id.clone(),
+                            display_name: upstream_model.clone(),
+                            upstream_model,
+                        }
+                    })
+                    .collect(),
+            };
+            StackMemberView {
+                provider_id: member.provider.id.clone(),
+                model_ids: member.model_ids.clone(),
+                route: member.route,
+                member_models: if member.route {
+                    all_ids.len()
+                } else {
+                    member.model_ids.len()
+                },
+                models,
+            }
         })
         .collect()
 }

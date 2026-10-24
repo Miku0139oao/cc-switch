@@ -4150,7 +4150,30 @@
     "queryFailed": "查询失败",
     "refresh": "刷新"
   },
+  "dashboard": {
+    "agent": "Agent",
+    "mode": "模式",
+    "provider": "当前供应商",
+    "routeState": "路由／聚合状态",
+    "quota": "关键额度",
+    "directState": "直接连接",
+    "routeQueue": "路由目标 · {{count}} 个",
+    "stackState": "{{members}} 家 · {{fallbacks}} 段回退",
+    "service": "本地路由",
+    "running": "运行中",
+    "stopped": "已停止",
+    "activeConnections": "活跃连接",
+    "totalRequests": "总请求",
+    "fallbacks": "故障切换",
+    "degraded": "连续失败 {{count}} 次",
+    "open": "前往",
+    "refreshAll": "刷新全部",
+    "startService": "启动服务",
+    "startFailed": "无法启动本地路由",
+    "refreshed": "控制台数据已刷新"
+  },
   "nav": {
+    "dashboard": "主控制台",
     "mainLabel": "主导航",
     "skipToContent": "跳到主要内容",
     "expandSidebar": "展开侧栏",
@@ -4262,6 +4285,22 @@
       "autoReviewDefaultMain": "主模型自己审批（默认）",
       "autoReviewUnavailable": "所选模型已不在聚合名单里（成员被移除或模型不再发布），审批暂时用默认模型；加回来后自动恢复。",
       "saveFailed": "保存失败：{{error}}"
+    },
+    "fallback": {
+      "title": "模型回退链",
+      "description": "主供应商遇到超时、限流或服务器错误时，按顺序尝试你指定的其他供应商与模型。",
+      "count": "{{count}} 段回退",
+      "none": "未设置回退",
+      "configure": "设置",
+      "dialogTitle": "设置模型回退链",
+      "dialogDescription": "为 {{model}} 指定有序回退；前一个目标失败后才会尝试下一个。",
+      "primary": "主要",
+      "moveUp": "上移",
+      "moveDown": "下移",
+      "chooseCandidate": "选择供应商与模型",
+      "add": "加入",
+      "saved": "模型回退链已保存",
+      "saveFailed": "保存模型回退链失败"
     },
     "queueMoved": "{{name}} 移到第 {{position}} 位。",
     "status": {
