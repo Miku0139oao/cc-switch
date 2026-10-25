@@ -4133,6 +4133,7 @@ mod stack_tests {
                 provider,
                 upstream_model: "gemini-3.8-flash-high".into(),
                 original_model: model.into(),
+                fallbacks: Vec::new(),
             }),
         )
         .await
@@ -4273,6 +4274,7 @@ mod stack_tests {
             provider: kimi,
             upstream_model: "kimi-k3".to_string(),
             original_model: "ccs-claude-kimi--kimi-k3".to_string(),
+            fallbacks: Vec::new(),
         };
         let body = json!({ "model": "kimi-k3", "messages": [] });
 

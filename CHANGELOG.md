@@ -2,6 +2,18 @@
 
 All notable changes to CC Switch will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **主控制台**：集中查看各 agent 的模式、路由／聚合状态、健康状态与关键供应商额度，支持全部刷新。
+- **聚合模型 fallback**：每个对外模型可设置有序的 provider/model 备用链，使用独立的事件记录与严格可用性错误分类。
+
+### Changed
+
+- **官方账号代理**：官方 OAuth／订阅账号也可进入路由与 fallback；账号绑定和凭据注入仍由各 adapter 校验。
+- **桌面 WebView 体验**：普通界面不再意外选中文字或弹出浏览器右键菜单，输入框、日志、代码与会话正文保留原生复制菜单。
+
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 

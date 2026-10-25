@@ -4,6 +4,7 @@ import { useQueries, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   CircleAlert,
+  KeyRound,
   LayoutDashboard,
   Play,
   RefreshCw,
@@ -17,14 +18,12 @@ import type { Provider } from "@/types";
 import type { AppMode } from "@/types/proxy";
 import {
   isModeAppId,
+  isProxyAppId,
   isStackAppId,
   orderAppIds,
 } from "@/config/appConfig";
 import { providersQueryOptions, useSettingsQuery } from "@/lib/query";
-import {
-  proxyKeys,
-  useProxyStatusQuery,
-} from "@/lib/query/proxy";
+import { proxyKeys, useProxyStatusQuery } from "@/lib/query/proxy";
 import { failoverApi } from "@/lib/api/failover";
 import { proxyApi } from "@/lib/api/proxy";
 import { AppPageHeader } from "@/components/shell/AppPageHeader";
@@ -41,6 +40,21 @@ const MODE_LABEL: Record<AppMode, string> = {
   route: "route",
   stack: "stack",
 };
+
+export function isFallbackTargetMissing(
+  mode: AppMode,
+  autoFailoverState: boolean | undefined,
+  queueCount: number,
+  fallbackCount: number,
+): boolean {
+  if (mode === "route") {
+    return (
+      autoFailoverState === false ||
+      (autoFailoverState === true && queueCount < 2)
+    );
+  }
+  return mode === "stack" && fallbackCount === 0;
+}
 
 function providerIsOfficial(provider: Provider | undefined): boolean {
   return provider?.category === "official";
@@ -95,9 +109,13 @@ function DashboardQuota({
 
 interface DashboardPageProps {
   onOpenApp: (app: AppId) => void;
+  onOpenAuthCenter: () => void;
 }
 
-export function DashboardPage({ onOpenApp }: DashboardPageProps) {
+export function DashboardPage({
+  onOpenApp,
+  onOpenAuthCenter,
+}: DashboardPageProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { data: status } = useProxyStatusQuery();
@@ -124,6 +142,22 @@ export function DashboardPage({ onOpenApp }: DashboardPageProps) {
       staleTime: 10_000,
     })),
   });
+  const failoverQueries = useQueries({
+    queries: apps.map((app) => ({
+      queryKey: ["failoverQueue", app] as const,
+      queryFn: () => failoverApi.getFailoverQueue(app),
+      enabled: isProxyAppId(app),
+      staleTime: 10_000,
+    })),
+  });
+  const autoFailoverQueries = useQueries({
+    queries: apps.map((app) => ({
+      queryKey: ["autoFailoverEnabled", app] as const,
+      queryFn: () => failoverApi.getAutoFailoverEnabled(app),
+      enabled: isProxyAppId(app),
+      staleTime: 10_000,
+    })),
+  });
   const providerResults = useQueries({
     queries: apps.map((app) => ({
       ...providersQueryOptions(app),
@@ -137,20 +171,13 @@ export function DashboardPage({ onOpenApp }: DashboardPageProps) {
     if (mode?.mode && mode.mode !== "direct") {
       return mode.routeProviderId ?? providers?.currentProviderId ?? null;
     }
-    return (
-      mode?.directProviderId ??
-      providers?.currentProviderId ??
-      null
-    );
+    return mode?.directProviderId ?? providers?.currentProviderId ?? null;
   });
   const healthQueries = useQueries({
     queries: apps.map((app, index) => ({
       queryKey: ["providerHealth", app, activeProviderIds[index]] as const,
       queryFn: () =>
-        failoverApi.getProviderHealth(
-          activeProviderIds[index] as string,
-          app,
-        ),
+        failoverApi.getProviderHealth(activeProviderIds[index] as string, app),
       enabled:
         status?.running === true &&
         isModeAppId(app) &&
@@ -193,6 +220,10 @@ export function DashboardPage({ onOpenApp }: DashboardPageProps) {
                 {t("dashboard.startService")}
               </Button>
             )}
+            <Button variant="quiet" onClick={onOpenAuthCenter}>
+              <KeyRound className="h-3.5 w-3.5" />
+              {t("dashboard.authCenter")}
+            </Button>
             <Button variant="quiet" onClick={() => void refreshAll()}>
               <RefreshCw className="h-3.5 w-3.5" />
               {t("dashboard.refreshAll")}
@@ -276,10 +307,25 @@ export function DashboardPage({ onOpenApp }: DashboardPageProps) {
                 const fallbackCount = Object.values(
                   stack?.fallbacks ?? {},
                 ).reduce((sum, chain) => sum + chain.length, 0);
+                const fallbackProviderIds = Array.from(
+                  new Set(
+                    Object.values(stack?.fallbacks ?? {})
+                      .map((chain) => chain[0]?.providerId)
+                      .filter((id): id is string => Boolean(id)),
+                  ),
+                ).slice(0, 2);
+                const queueCount = failoverQueries[index]?.data?.length ?? 0;
+                const autoFailoverState = autoFailoverQueries[index]?.data;
+                const missingFallback = isFallbackTargetMissing(
+                  effectiveMode,
+                  autoFailoverState,
+                  queueCount,
+                  fallbackCount,
+                );
                 const routeState =
                   effectiveMode === "route"
                     ? t("dashboard.routeQueue", {
-                        count: mode ? 1 : 0,
+                        count: queueCount,
                       })
                     : effectiveMode === "stack"
                       ? t("dashboard.stackState", {
@@ -328,11 +374,32 @@ export function DashboardPage({ onOpenApp }: DashboardPageProps) {
                         </div>
                       )}
                     </div>
-                    <span className="text-caption text-fg-2">
-                      {routeState}
-                    </span>
+                    <div className="min-w-0">
+                      <div className="text-caption text-fg-2">{routeState}</div>
+                      {missingFallback && (
+                        <div className="mt-0.5 flex items-center gap-1 text-caption text-warning-text">
+                          <CircleAlert className="h-3 w-3 shrink-0" />
+                          <span className="truncate">
+                            {t("dashboard.fallbackMissing")}
+                          </span>
+                        </div>
+                      )}
+                    </div>
                     <div className="min-w-0 text-end text-caption">
-                      <DashboardQuota app={app} provider={provider} />
+                      <div className="space-y-1">
+                        <DashboardQuota app={app} provider={provider} />
+                        {fallbackProviderIds.map((providerId) => (
+                          <div key={providerId}>
+                            <div className="text-fg-3">
+                              {t("dashboard.fallbackProvider")}
+                            </div>
+                            <DashboardQuota
+                              app={app}
+                              provider={providerData?.providers[providerId]}
+                            />
+                          </div>
+                        ))}
+                      </div>
                     </div>
                     <Button
                       variant="quiet"

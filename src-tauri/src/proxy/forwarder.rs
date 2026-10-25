@@ -372,6 +372,8 @@ pub struct RequestForwarder {
     /// `max_attempts = max_retries + 1`，所以 max_retries=0 表示仅尝试一家、
     /// max_retries=3（默认）表示最多 4 家。loop 同时受 providers.len() 自然限制。
     max_attempts: usize,
+    /// 该应用是否启用了路由故障转移。用于区分“单家模式”和“有队列但没有可用下一家”。
+    failover_enabled: bool,
     /// Stack 模型的请求（`mode::stack`）：挂在结构体上，整流器重试再次调用 `forward()` 时照样
     /// 生效。见 [`Self::routing_state_enabled`]。
     stack_request: bool,
@@ -492,6 +494,7 @@ impl RequestForwarder {
                 streaming_first_byte_timeout,
             ),
             max_attempts,
+            failover_enabled: false,
             stack_request: false,
             stack_attempt_models: Vec::new(),
         }
@@ -500,6 +503,11 @@ impl RequestForwarder {
     /// 标记为 Stack 模型的请求。
     pub fn stack_request(mut self, stack_request: bool) -> Self {
         self.stack_request = stack_request;
+        self
+    }
+
+    pub fn failover_enabled(mut self, failover_enabled: bool) -> Self {
+        self.failover_enabled = failover_enabled;
         self
     }
 
@@ -561,6 +569,24 @@ impl RequestForwarder {
         });
     }
 
+    async fn record_health_result(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+        success: bool,
+        error_msg: Option<String>,
+    ) {
+        if let Err(error) = self
+            .router
+            .record_health_result(provider_id, app_type, success, error_msg)
+            .await
+        {
+            log::warn!(
+                "[{app_type}] 记录 Provider 健康状态失败: provider_id={provider_id}, error={error}"
+            );
+        }
+    }
+
     /// 整流（thinking signature 或 budget）重试失败后的统一收尾。
     ///
     /// `None` 表示已记录熔断器、累积 `last_error`/`last_provider`，
@@ -574,6 +600,7 @@ impl RequestForwarder {
         provider: &Provider,
         app_type_str: &str,
         used_half_open_permit: bool,
+        track_circuit_breaker: bool,
         rectifier_label: &str,
         last_error: &mut Option<ProxyError>,
         last_provider: &mut Option<Provider>,
@@ -591,6 +618,7 @@ impl RequestForwarder {
                 provider,
                 app_type_str,
                 used_half_open_permit,
+                track_circuit_breaker,
                 &retry_err,
                 format!(
                     "Provider {} {rectifier_label}重试失败: {}",
@@ -693,22 +721,28 @@ impl RequestForwarder {
         provider: &Provider,
         app_type_str: &str,
         used_half_open_permit: bool,
+        track_circuit_breaker: bool,
         error: &ProxyError,
         last_error: String,
     ) {
         if !self.provider_health_enabled() {
             return;
         }
-        let _ = self
-            .router
-            .record_result(
-                &provider.id,
-                app_type_str,
-                used_half_open_permit,
-                false,
-                Some(error.to_string()),
-            )
-            .await;
+        if track_circuit_breaker {
+            let _ = self
+                .router
+                .record_result(
+                    &provider.id,
+                    app_type_str,
+                    used_half_open_permit,
+                    false,
+                    Some(error.to_string()),
+                )
+                .await;
+        } else {
+            self.record_health_result(&provider.id, app_type_str, false, Some(error.to_string()))
+                .await;
+        }
         if self.routing_state_enabled() {
             self.status.write().await.last_error = Some(last_error);
         }
@@ -834,6 +868,7 @@ impl RequestForwarder {
 
         // 单 Provider 场景下跳过熔断器检查（故障转移关闭时）；Stack 模型的请求不碰熔断器。
         let bypass_circuit_breaker = providers.len() == 1;
+        let track_circuit_breaker = !bypass_circuit_breaker;
 
         // 依次尝试每个供应商
         for (attempt_index, provider) in providers.iter().enumerate() {
@@ -999,6 +1034,7 @@ impl RequestForwarder {
                                             provider,
                                             app_type_str,
                                             used_half_open_permit,
+                                            track_circuit_breaker,
                                             "media 降级",
                                             &mut last_error,
                                             &mut last_provider,
@@ -1194,6 +1230,7 @@ impl RequestForwarder {
                                                 provider,
                                                 app_type_str,
                                                 used_half_open_permit,
+                                                track_circuit_breaker,
                                                 "整流",
                                                 &mut last_error,
                                                 &mut last_provider,
@@ -1293,6 +1330,7 @@ impl RequestForwarder {
                                             provider,
                                             app_type_str,
                                             used_half_open_permit,
+                                            track_circuit_breaker,
                                             "budget 整流",
                                             &mut last_error,
                                             &mut last_provider,
@@ -1334,21 +1372,51 @@ impl RequestForwarder {
                                 provider,
                                 app_type_str,
                                 used_half_open_permit,
+                                track_circuit_breaker,
                                 &e,
                                 format!("Provider {} 失败: {}", provider.name, e),
                             )
                             .await;
 
+                            let will_retry = attempt_index + 1 < providers.len()
+                                && attempted_providers < self.max_attempts;
                             let (log_code, log_message) = build_retryable_failure_log(
                                 &provider.name,
                                 attempted_providers,
                                 providers.len(),
+                                will_retry,
+                                self.failover_enabled,
+                                self.stack_request,
                                 &e,
                             );
                             log::warn!("[{app_type_str}] [{log_code}] {log_message}");
 
                             last_error = Some(e);
                             last_provider = Some(provider.clone());
+                            if will_retry
+                                && self.stack_request
+                                && self.stack_attempt_models.len() > 1
+                                && attempt_index + 1 < providers.len()
+                            {
+                                let next = &providers[attempt_index + 1];
+                                let next_model = self
+                                    .stack_attempt_models
+                                    .get(attempt_index + 1)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                self.router.record_stack_fallback_event(
+                                    &self.session_id,
+                                    app_type_str,
+                                    self.stack_attempt_models
+                                        .first()
+                                        .map_or("unknown", String::as_str),
+                                    attempt_index,
+                                    &provider.id,
+                                    &next.id,
+                                    &next_model,
+                                    proxy_error_class(last_error.as_ref().expect("set above")),
+                                );
+                            }
                             // 继续尝试下一个供应商
                             continue;
                         }
@@ -3409,6 +3477,34 @@ fn extract_error_message(error: &ProxyError) -> Option<String> {
     }
 }
 
+fn proxy_error_class(error: &ProxyError) -> &'static str {
+    match error {
+        ProxyError::Timeout(_) => "timeout",
+        ProxyError::ForwardFailed(_) => "transport",
+        ProxyError::StreamIdleTimeout(_) => "stream_idle_timeout",
+        ProxyError::ProviderUnhealthy(_) => "provider_unhealthy",
+        ProxyError::UpstreamError { status: 429, body }
+            if body.as_deref().is_some_and(is_quota_exhaustion_message) =>
+        {
+            "quota_exhausted"
+        }
+        ProxyError::UpstreamError { status, .. } if *status == 429 => "rate_limit",
+        ProxyError::UpstreamError { status, .. } if *status >= 500 => "upstream_5xx",
+        ProxyError::UpstreamError { .. } => "upstream",
+        _ => "other",
+    }
+}
+
+fn is_quota_exhaustion_message(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    lower.contains("usage limit")
+        || lower.contains("usage_limit")
+        || lower.contains("gousagelimiterror")
+        || lower.contains("quota exceeded")
+        || lower.contains("insufficient_user_quota")
+        || lower.contains("quota exhausted")
+}
+
 /// 检测 Provider 是否为 Bedrock（通过 CLAUDE_CODE_USE_BEDROCK 环境变量判断）
 fn is_bedrock_provider(provider: &Provider) -> bool {
     provider
@@ -3431,20 +3527,42 @@ fn build_retryable_failure_log(
     provider_name: &str,
     attempted_providers: usize,
     total_providers: usize,
+    will_retry: bool,
+    failover_enabled: bool,
+    stack_request: bool,
     error: &ProxyError,
 ) -> (&'static str, String) {
     let error_summary = summarize_proxy_error(error);
 
-    if total_providers <= 1 {
-        (
-            log_fwd::SINGLE_PROVIDER_FAILED,
-            format!("Provider {provider_name} 请求失败: {error_summary}"),
-        )
-    } else {
+    if will_retry {
         (
             log_fwd::PROVIDER_FAILED_RETRY,
             format!(
                 "Provider {provider_name} 失败，继续尝试下一个 ({attempted_providers}/{total_providers}): {error_summary}"
+            ),
+        )
+    } else if !failover_enabled {
+        let reason = if stack_request {
+            "此聚合模型未配置 fallback"
+        } else {
+            "故障转移未启用"
+        };
+        (
+            log_fwd::SINGLE_PROVIDER_FAILED,
+            format!(
+                "Provider {provider_name} 请求失败，{reason}，本次请求没有备用 Provider: {error_summary}"
+            ),
+        )
+    } else {
+        let fallback_kind = if stack_request {
+            "聚合 fallback 链"
+        } else {
+            "fallback 队列"
+        };
+        (
+            log_fwd::NO_AVAILABLE_FAILOVER,
+            format!(
+                "Provider {provider_name} 请求失败，但没有可用的下一个 Provider（已尝试 {attempted_providers}/{total_providers}；请检查 {fallback_kind}、熔断状态或重试上限）: {error_summary}"
             ),
         )
     }
@@ -4808,7 +4926,9 @@ mod tests {
             non_streaming_timeout,
             streaming_first_byte_timeout,
             max_attempts: 1,
+            failover_enabled: false,
             stack_request: false,
+            stack_attempt_models: Vec::new(),
         }
     }
 
@@ -4852,16 +4972,72 @@ mod tests {
     }
 
     #[test]
+    fn stack_fallback_only_retries_availability_errors() {
+        let forwarder = test_forwarder(Duration::ZERO, Duration::ZERO);
+        for retryable in [
+            ProxyError::Timeout("timeout".to_string()),
+            ProxyError::ForwardFailed("network".to_string()),
+            ProxyError::StreamIdleTimeout(120),
+            ProxyError::UpstreamError {
+                status: 429,
+                body: None,
+            },
+            ProxyError::UpstreamError {
+                status: 503,
+                body: None,
+            },
+        ] {
+            assert_eq!(
+                forwarder.categorize_stack_fallback_error(&retryable),
+                ErrorCategory::Retryable,
+                "{retryable:?}"
+            );
+        }
+        for blocked in [
+            ProxyError::UpstreamError {
+                status: 400,
+                body: None,
+            },
+            ProxyError::UpstreamError {
+                status: 401,
+                body: None,
+            },
+            ProxyError::UpstreamError {
+                status: 403,
+                body: None,
+            },
+            ProxyError::UpstreamError {
+                status: 404,
+                body: None,
+            },
+            ProxyError::UpstreamError {
+                status: 422,
+                body: None,
+            },
+            ProxyError::ConfigError("bad config".to_string()),
+        ] {
+            assert_eq!(
+                forwarder.categorize_stack_fallback_error(&blocked),
+                ErrorCategory::NonRetryable,
+                "{blocked:?}"
+            );
+        }
+    }
+
+    #[test]
     fn single_provider_retryable_log_uses_single_provider_code() {
         let error = ProxyError::UpstreamError {
             status: 429,
             body: Some(r#"{"error":{"message":"rate limit exceeded"}}"#.to_string()),
         };
 
-        let (code, message) = build_retryable_failure_log("PackyCode-response", 1, 1, &error);
+        let (code, message) =
+            build_retryable_failure_log("PackyCode-response", 1, 1, false, false, false, &error);
 
         assert_eq!(code, log_fwd::SINGLE_PROVIDER_FAILED);
         assert!(message.contains("Provider PackyCode-response 请求失败"));
+        assert!(message.contains("故障转移未启用"));
+        assert!(message.contains("没有备用 Provider"));
         assert!(message.contains("上游 HTTP 429"));
         // 上游错误消息保留(截断)，用于诊断失败原因。
         assert!(message.contains("rate limit exceeded"));
@@ -4872,11 +5048,71 @@ mod tests {
     fn multi_provider_retryable_log_keeps_failover_wording() {
         let error = ProxyError::Timeout("upstream timed out after 30s".to_string());
 
-        let (code, message) = build_retryable_failure_log("primary", 1, 3, &error);
+        let (code, message) =
+            build_retryable_failure_log("primary", 1, 3, true, true, false, &error);
 
         assert_eq!(code, log_fwd::PROVIDER_FAILED_RETRY);
         assert!(message.contains("继续尝试下一个 (1/3)"));
         assert!(message.contains("请求超时"));
+    }
+
+    #[test]
+    fn failover_enabled_without_a_next_attempt_uses_no_available_failover_code() {
+        let error = ProxyError::UpstreamError {
+            status: 429,
+            body: Some(r#"{"error":{"message":"Go usage limit exceeded"}}"#.to_string()),
+        };
+
+        let (code, message) =
+            build_retryable_failure_log("OpenCode Go", 1, 1, false, true, false, &error);
+
+        assert_eq!(code, log_fwd::NO_AVAILABLE_FAILOVER);
+        assert!(message.contains("没有可用的下一个 Provider"));
+        assert!(message.contains("fallback 队列"));
+        assert!(message.contains("Go usage limit exceeded"));
+        assert!(!message.contains("故障转移未启用"));
+    }
+
+    #[test]
+    fn stack_fallback_without_a_next_target_names_the_fallback_chain() {
+        let error = ProxyError::UpstreamError {
+            status: 429,
+            body: Some(r#"{"error":{"message":"Go usage limit exceeded"}}"#.to_string()),
+        };
+
+        let (code, message) =
+            build_retryable_failure_log("OpenCode Go", 1, 1, false, true, true, &error);
+
+        assert_eq!(code, log_fwd::NO_AVAILABLE_FAILOVER);
+        assert!(message.contains("聚合 fallback 链"));
+        assert!(!message.contains("fallback 队列"));
+    }
+
+    #[test]
+    fn last_provider_failure_does_not_claim_another_attempt() {
+        let error = ProxyError::ForwardFailed("connection reset".to_string());
+
+        let (code, message) =
+            build_retryable_failure_log("primary", 2, 2, false, true, false, &error);
+
+        assert_eq!(code, log_fwd::NO_AVAILABLE_FAILOVER);
+        assert!(!message.contains("继续尝试下一个"));
+        assert!(message.contains("已尝试 2/2"));
+    }
+
+    #[test]
+    fn proxy_error_class_distinguishes_quota_exhaustion_from_rate_limit() {
+        let quota = ProxyError::UpstreamError {
+            status: 429,
+            body: Some(r#"{"error":{"type":"GoUsageLimitError"}}"#.to_string()),
+        };
+        let rate_limit = ProxyError::UpstreamError {
+            status: 429,
+            body: Some(r#"{"error":{"message":"too many requests"}}"#.to_string()),
+        };
+
+        assert_eq!(proxy_error_class(&quota), "quota_exhausted");
+        assert_eq!(proxy_error_class(&rate_limit), "rate_limit");
     }
 
     #[test]
@@ -8186,6 +8422,37 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn usage_limit_429_fails_over_to_the_second_provider() {
+            let up1 = upstream(vec![error(429, "Go usage limit exceeded")]).await;
+            let up2 = upstream(vec![ok()]).await;
+            let fwd = forwarder(2, "p1").failover_enabled(true);
+
+            let result = send(
+                &fwd,
+                vec![provider("p1", &up1), provider("p2", &up2)],
+                plain_body(),
+            )
+            .await;
+
+            assert_eq!(result.ok().map(|r| r.provider.id), Some("p2".into()));
+            assert_eq!(
+                books(&fwd).await,
+                Books {
+                    total: 1,
+                    success: 1,
+                    failed: 0,
+                    success_rate: 100.0,
+                    failover_count: 1,
+                    last_error: None,
+                    attempting: Some("p2".into()),
+                    in_use: Some("p2".into()),
+                }
+            );
+            assert_eq!(breaker(&fwd, "p1").await, Some((1, 1)));
+            assert_eq!(breaker(&fwd, "p2").await, Some((1, 0)));
+        }
+
+        #[tokio::test]
         async fn non_retryable_error_is_neutral_for_the_breaker() {
             let up = upstream(vec![error(400, "bad request")]).await;
             let fwd = forwarder(1, "p1");
@@ -8207,6 +8474,21 @@ mod tests {
                 }
             );
             assert_eq!(breaker(&fwd, "p1").await, None);
+        }
+
+        #[tokio::test]
+        async fn single_provider_quota_failure_does_not_open_an_unusable_breaker() {
+            let up = upstream(vec![error(429, "Go usage limit exceeded")]).await;
+            let fwd = forwarder(1, "p1");
+
+            let err = expect_err(send(&fwd, vec![provider("p1", &up)], plain_body()).await);
+
+            assert!(matches!(
+                err.error,
+                ProxyError::UpstreamError { status: 429, .. }
+            ));
+            assert_eq!(breaker(&fwd, "p1").await, None);
+            assert_eq!(up.requests.lock().await.len(), 1);
         }
 
         #[tokio::test]
@@ -8347,7 +8629,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn signature_rectifier_retry_provider_error_counts_against_the_breaker() {
+        async fn single_provider_rectifier_retry_error_does_not_touch_the_breaker() {
             let up = upstream(vec![error(400, SIGNATURE_ERROR), error(502, "gateway")]).await;
             let fwd = forwarder(1, "p1");
 
@@ -8374,7 +8656,7 @@ mod tests {
                     in_use: None,
                 }
             );
-            assert_eq!(breaker(&fwd, "p1").await, Some((1, 1)));
+            assert_eq!(breaker(&fwd, "p1").await, None);
             assert_eq!(up.requests.lock().await.len(), 2);
         }
 

@@ -196,6 +196,45 @@ impl Database {
         }
     }
 
+    /// Persist one model-level aggregation fallback transition. This is
+    /// deliberately separate from route-mode failover counters: the logical
+    /// model and provider can change per request without changing the app's
+    /// global route.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_stack_fallback_event(
+        &self,
+        session_id: &str,
+        app_type: &str,
+        logical_model: &str,
+        attempt_index: usize,
+        failed_provider_id: &str,
+        next_provider_id: &str,
+        next_model: &str,
+        error_class: &str,
+    ) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.execute(
+            "INSERT INTO stack_fallback_events (
+                session_id, app_type, logical_model, attempt_index,
+                failed_provider_id, next_provider_id, next_model,
+                error_class, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                session_id,
+                app_type,
+                logical_model,
+                attempt_index as i64,
+                failed_provider_id,
+                next_provider_id,
+                next_model,
+                error_class,
+                chrono::Utc::now().timestamp(),
+            ],
+        )
+        .map_err(|error| AppError::Database(error.to_string()))?;
+        Ok(())
+    }
+
     /// 更新应用级代理配置
     pub async fn update_proxy_config_for_app(
         &self,

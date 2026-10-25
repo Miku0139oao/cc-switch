@@ -61,7 +61,7 @@ export function StackFallbackEditor({
   const allModels = useMemo<PublishedModel[]>(
     () =>
       (stack?.members ?? []).flatMap((member) =>
-        member.models.map((model) => ({
+        (member.models ?? []).map((model) => ({
           providerId: member.providerId,
           providerName: providers[member.providerId]?.name ?? member.providerId,
           model,
@@ -73,7 +73,7 @@ export function StackFallbackEditor({
     () =>
       (stack?.members ?? []).flatMap((member) =>
         member.modelIds.flatMap((id) => {
-          const model = member.models.find((entry) => entry.id === id);
+          const model = (member.models ?? []).find((entry) => entry.id === id);
           return model
             ? [
                 {

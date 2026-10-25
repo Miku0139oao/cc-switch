@@ -746,20 +746,13 @@ fn resolve_fallbacks(
 ) -> Result<Vec<ResolvedFallback>, AppError> {
     let mut resolved = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for target in stack
-        .fallbacks
-        .get(published_model)
-        .into_iter()
-        .flatten()
-    {
+    for target in stack.fallbacks.get(published_model).into_iter().flatten() {
         if !stack.is_member(&target.provider_id)
             || !seen.insert((target.provider_id.clone(), target.upstream_model.clone()))
         {
             continue;
         }
-        if target.provider_id == primary_provider_id
-            && target.upstream_model.trim().is_empty()
-        {
+        if target.provider_id == primary_provider_id && target.upstream_model.trim().is_empty() {
             continue;
         }
         let Some(provider) = db.get_provider_by_id(&target.provider_id, app.as_str())? else {
@@ -802,13 +795,7 @@ fn resolve_desktop(
                 provider: member.provider.clone(),
                 upstream_model: found.upstream,
                 original_model: model.to_string(),
-                fallbacks: resolve_fallbacks(
-                    db,
-                    app,
-                    &stack,
-                    model,
-                    &member.provider.id,
-                )?,
+                fallbacks: resolve_fallbacks(db, app, &stack, model, &member.provider.id)?,
             })));
         }
     }
@@ -1297,6 +1284,36 @@ mod tests {
             ),
             other => panic!("expected a hit, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_resolved_model_carries_its_ordered_fallbacks() {
+        let fx = fixture();
+        let primary = "ccs-claude-kimi--kimi-k3";
+        state::update(&fx.store, |live| {
+            live.apps.get_mut("claude").unwrap().stack.fallbacks.insert(
+                primary.to_string(),
+                vec![
+                    state::StackFallbackTarget {
+                        provider_id: "zhipu".to_string(),
+                        upstream_model: "glm-5.2[1M]".to_string(),
+                    },
+                    state::StackFallbackTarget {
+                        provider_id: "gone".to_string(),
+                        upstream_model: "gone-model".to_string(),
+                    },
+                ],
+            );
+        })
+        .unwrap();
+
+        let Resolved::Hit(target) = resolve_in(&fx, AppType::Claude, primary) else {
+            panic!("expected primary model");
+        };
+        assert_eq!(target.provider.id, "kimi");
+        assert_eq!(target.fallbacks.len(), 1);
+        assert_eq!(target.fallbacks[0].provider.id, "zhipu");
+        assert_eq!(target.fallbacks[0].upstream_model, "glm-5.2[1M]");
     }
 
     fn miss(resolved: Resolved) -> StackMiss {

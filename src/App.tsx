@@ -1637,6 +1637,7 @@ function App() {
               setActiveApp(app);
               setCurrentView("providers");
             }}
+            onOpenAuthCenter={() => setCurrentView("auth")}
           />
         );
       case "usage":

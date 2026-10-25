@@ -571,7 +571,7 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
           t("providerCard.reason.noStack"),
         );
       }
-      if (official(p)) {
+      if (app === "codex" && official(p)) {
         return {
           provider: p,
           presentation: {
@@ -591,7 +591,11 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
       return {
         provider: p,
         presentation: {
-          chips: providerNeedsRouting(app, p) ? [chip.needsRoute(p)] : [],
+          chips: official(p)
+            ? [chip.official()]
+            : providerNeedsRouting(app, p)
+              ? [chip.needsRoute(p)]
+              : [],
           // 还没添加的也能直接设为默认：后端会把默认那家一起加进名单
           menuItems: setDefaultItems(p),
           buttons: [

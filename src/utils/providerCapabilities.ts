@@ -113,7 +113,9 @@ export function supportsFailover(
   appId: AppId,
   provider: Pick<Provider, "id" | "category" | "meta" | "settingsConfig">,
 ): boolean {
-  return !supportsOfficialProxyTakeover(appId, provider);
+  if (appId !== "codex") return true;
+  const identity = resolveCodexOfficialIdentity(appId, provider);
+  return identity === null || identity === "api_key";
 }
 
 /** Keep the UI capability rule aligned with the Rust takeover policy. */

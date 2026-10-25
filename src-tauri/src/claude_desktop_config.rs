@@ -1145,13 +1145,6 @@ pub fn route_profile(
     proxy_url: &str,
     stack: &[DesktopStackModel],
 ) -> Result<Value, AppError> {
-    if is_official_provider(route) {
-        return Err(AppError::localized(
-            "claude_desktop.provider.official_not_routable",
-            "Claude Desktop 官方账号不经过本地路由",
-            "The Claude Desktop official account does not go through local routing",
-        ));
-    }
     validate_proxy_provider(route)?;
     let mut model_specs = proxy_model_routes(route)?
         .into_iter()

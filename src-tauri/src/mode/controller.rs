@@ -1351,7 +1351,10 @@ pub fn stack_views(state: &AppState, app: &AppType) -> Result<StackView, String>
     let mut fallbacks = stack.fallbacks.clone();
     fallbacks.retain(|model, targets| {
         targets.retain(|target| stack.is_member(&target.provider_id));
-        !targets.is_empty() && members.iter().any(|member| member.model_ids.contains(model))
+        !targets.is_empty()
+            && members
+                .iter()
+                .any(|member| member.model_ids.contains(model))
     });
     Ok(StackView {
         active: mode.is_proxy() && stack.enabled,
@@ -1386,12 +1389,10 @@ pub async fn set_stack_fallback_chain(
     )
     .map_err(err)?;
     let inventory = stack::member_views(app, &members);
-    if !inventory.iter().any(|member| {
-        member
-            .models
-            .iter()
-            .any(|model| model.id == model_id)
-    }) {
+    if !inventory
+        .iter()
+        .any(|member| member.models.iter().any(|model| model.id == model_id))
+    {
         return Err(format!("聚合模型不存在: {model_id}"));
     }
 

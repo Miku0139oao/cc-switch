@@ -163,7 +163,7 @@ describe("buildSwitchSections — delete guard", () => {
 });
 
 describe("buildSwitchSections — route", () => {
-  it("routes to a provider and keeps official subscriptions out", () => {
+  it("routes to official subscriptions like any other provider", () => {
     const { sections, input } = build({
       active: "route",
       view: "route",
@@ -178,10 +178,9 @@ describe("buildSwitchSections — route", () => {
     expect(input.actions.routeTo).toHaveBeenCalledWith(relay);
     // 路由页上没有跟直连那家有关的操作，不标「直连时使用」
     expect(item(sections, "relay").chips).toEqual([]);
-    expect(item(sections, "official").dim).toBe(true);
-    expect(button(sections, "official", "blocked").disabledReason).toBe(
-      "providerCard.reason.noRoute",
-    );
+    expect(item(sections, "official").dim).toBeUndefined();
+    button(sections, "official", "routeHere").onClick();
+    expect(input.actions.routeTo).toHaveBeenCalledWith(official);
   });
 
   it("splits the failover queue from the rest and only moves within the queue", () => {
@@ -308,12 +307,16 @@ describe("buildSwitchSections — route", () => {
       expect(item(sections, id).chips).toEqual([]);
       expect(item(sections, id).menuItems).toBeUndefined();
     }
-    // 不能路由的官方订阅没有按钮可挂原因，原因在「官方」徽标上
-    expect(item(sections, "official")).toMatchObject({
-      dim: true,
-      buttons: [],
-      chips: [{ key: "official", title: "providerCard.reason.noRoute" }],
-    });
+    // 官方订阅也可进入路由，只是此页没有行内主操作。
+    expect(item(sections, "official").dim).toBeUndefined();
+    expect(item(sections, "official").buttons).toEqual([]);
+    expect(item(sections, "official").chips).toEqual([
+      {
+        key: "official",
+        label: "providerCard.chip.official",
+        tone: "outline",
+      },
+    ]);
   });
 });
 
@@ -364,11 +367,10 @@ describe("buildSwitchSections — stack", () => {
     expect(input.actions.stackSetDefault).toHaveBeenCalledWith(converted);
     // 默认那家自己没有这一项
     expect(item(sections, "relay").menuItems).toBeUndefined();
-    // Claude 官方订阅不能进聚合，也做不了默认
-    expect(button(sections, "official", "blocked").disabledReason).toBe(
-      "providerCard.reason.noStack",
-    );
-    expect(item(sections, "official").menuItems).toBeUndefined();
+    // 官方订阅可进聚合，也可设为默认。
+    button(sections, "official", "add").onClick();
+    expect(input.actions.stackAdd).toHaveBeenCalledWith(official);
+    expect(setDefaultItem(sections, "official")).toBeDefined();
   });
 
   it("previews the stack outside Stack mode: rows only edit the list", () => {

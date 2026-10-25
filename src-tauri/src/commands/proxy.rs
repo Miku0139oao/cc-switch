@@ -3,10 +3,10 @@
 //! 提供前端调用的 API 接口
 
 use crate::error::AppError;
-use crate::AppType;
 use crate::proxy::types::*;
 use crate::proxy::{CircuitBreakerConfig, CircuitBreakerStats};
 use crate::store::AppState;
+use crate::AppType;
 use std::str::FromStr;
 
 /// 有 `proxy_config` 行的应用：重试、熔断、故障转移这些设置只对它们有意义。
@@ -212,13 +212,7 @@ pub async fn set_stack_fallback_chain(
     targets: Vec<crate::mode::state::StackFallbackTarget>,
 ) -> Result<(), String> {
     let app = require_mode_app(&app_type)?;
-    crate::mode::controller::set_stack_fallback_chain(
-        state.inner(),
-        &app,
-        &model_id,
-        targets,
-    )
-    .await
+    crate::mode::controller::set_stack_fallback_chain(state.inner(), &app, &model_id, targets).await
 }
 
 /// Codex 聚合的模型被别的模型目录挡住时，改用 CC Switch 生成的目录（去掉指向别的文件的
@@ -277,9 +271,12 @@ pub async fn get_dashboard_snapshot(
             app.as_str(),
         )
         .map_err(|error| error.to_string())?;
-        let direct_provider_id =
-            crate::mode::current::provider_for(&state.db, &app, crate::mode::current::Purpose::Direct)
-                .map_err(|error| error.to_string())?;
+        let direct_provider_id = crate::mode::current::provider_for(
+            &state.db,
+            &app,
+            crate::mode::current::Purpose::Direct,
+        )
+        .map_err(|error| error.to_string())?;
         let mode_name = if !mode.is_proxy() {
             "direct"
         } else if crate::mode::stack::supports_stack(&app) && stack.enabled {

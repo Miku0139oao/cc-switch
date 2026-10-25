@@ -37,6 +37,32 @@ impl ProviderRouter {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_stack_fallback_event(
+        &self,
+        session_id: &str,
+        app_type: &str,
+        logical_model: &str,
+        attempt_index: usize,
+        failed_provider_id: &str,
+        next_provider_id: &str,
+        next_model: &str,
+        error_class: &str,
+    ) {
+        if let Err(error) = self.db.record_stack_fallback_event(
+            session_id,
+            app_type,
+            logical_model,
+            attempt_index,
+            failed_provider_id,
+            next_provider_id,
+            next_model,
+            error_class,
+        ) {
+            log::warn!("[{app_type}] failed to record aggregation fallback event: {error}");
+        }
+    }
+
     /// 选择可用的供应商（支持故障转移）
     ///
     /// 返回按优先级排序的可用供应商列表：
@@ -158,13 +184,7 @@ impl ProviderRouter {
         success: bool,
         error_msg: Option<String>,
     ) -> Result<(), AppError> {
-        // 1. 按应用独立获取熔断器配置
-        let failure_threshold = match self.db.get_proxy_config_for_app(app_type).await {
-            Ok(app_config) => app_config.circuit_failure_threshold,
-            Err(_) => 5, // 默认值
-        };
-
-        // 2. 更新熔断器状态
+        // 1. 更新熔断器状态
         let circuit_key = format!("{app_type}:{provider_id}");
         let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
 
@@ -174,18 +194,39 @@ impl ProviderRouter {
             breaker.record_failure(used_half_open_permit).await;
         }
 
-        // 3. 更新数据库健康状态（使用配置的阈值）
+        // 2. 更新数据库健康状态（使用配置的阈值）
+        self.record_health_result(provider_id, app_type, success, error_msg)
+            .await
+    }
+
+    /// 只更新供应商健康历史，不读写熔断器。
+    ///
+    /// 单家路由没有可切换对象；此时打开熔断器既不会改变当前请求，也可能让
+    /// 下一次选路误报“全部熔断”。健康历史仍有诊断价值，因此单独保留。
+    pub async fn record_health_result(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+        success: bool,
+        error_msg: Option<String>,
+    ) -> Result<(), AppError> {
+        let failure_threshold = self.failure_threshold(app_type).await;
         self.db
             .update_provider_health_with_threshold(
                 provider_id,
                 app_type,
                 success,
-                error_msg.clone(),
+                error_msg,
                 failure_threshold,
             )
-            .await?;
+            .await
+    }
 
-        Ok(())
+    async fn failure_threshold(&self, app_type: &str) -> u32 {
+        match self.db.get_proxy_config_for_app(app_type).await {
+            Ok(app_config) => app_config.circuit_failure_threshold,
+            Err(_) => 5, // 默认值
+        }
     }
 
     /// 重置熔断器（手动恢复）
@@ -383,6 +424,30 @@ mod tests {
 
         let breaker = router.get_or_create_circuit_breaker("claude:test").await;
         assert!(breaker.allow_request().await.allowed);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn health_only_result_does_not_create_a_circuit_breaker() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+        let router = ProviderRouter::new(db.clone());
+        let provider =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        db.save_provider("claude", &provider).unwrap();
+
+        router
+            .record_health_result("a", "claude", false, Some("usage limit".to_string()))
+            .await
+            .unwrap();
+
+        assert!(router
+            .get_circuit_breaker_stats("a", "claude")
+            .await
+            .is_none());
+        let health = db.get_provider_health("a", "claude").await.unwrap();
+        assert_eq!(health.consecutive_failures, 1);
+        assert_eq!(health.last_error.as_deref(), Some("usage limit"));
     }
 
     #[tokio::test]

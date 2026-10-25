@@ -533,7 +533,8 @@ describe("useProviderActions", () => {
     expect(toastErrorMock).not.toHaveBeenCalled();
   });
 
-  it("continues blocking other official providers during takeover", async () => {
+  it("allows official subscriptions during takeover", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce(undefined);
     const { wrapper } = createWrapper();
     const provider = createProvider({
       id: "claude-official",
@@ -548,8 +549,8 @@ describe("useProviderActions", () => {
       await result.current.switchProvider(provider);
     });
 
-    expect(switchProviderMutateAsync).not.toHaveBeenCalled();
-    expect(toastErrorMock).toHaveBeenCalledTimes(1);
+    expect(switchProviderMutateAsync).toHaveBeenCalledWith("claude-official");
+    expect(toastErrorMock).not.toHaveBeenCalled();
   });
 
   it("allows a managed Codex Official card during takeover", async () => {

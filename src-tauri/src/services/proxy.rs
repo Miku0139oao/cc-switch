@@ -11,7 +11,6 @@ use crate::proxy::switch_lock::SwitchLockManager;
 use crate::proxy::types::*;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tauri::Emitter;
 use tokio::sync::RwLock;
 
 use crate::live::project::claude::PROXY_TOKEN_PLACEHOLDER;
@@ -208,14 +207,6 @@ impl ProxyService {
             server
                 .set_active_target(app_type.as_str(), &provider.id, &provider.name)
                 .await;
-        }
-    }
-
-    pub(crate) async fn emit(&self, event: &str, payload: Value) {
-        if let Some(handle) = self.app_handle.read().await.as_ref() {
-            if let Err(error) = handle.emit(event, payload) {
-                log::warn!("发送事件 {event} 失败: {error}");
-            }
         }
     }
 
