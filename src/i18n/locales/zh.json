@@ -4974,6 +4974,18 @@
   },
   "authCenter": {
     "helpTitle": "授权中心是什么",
+    "providers": {
+      "title": "供应商",
+      "description": "已在各 App 使用的 API Key 与官方供应商；凭据由来源 App 管理。",
+      "search": "搜索供应商、App 或地址",
+      "empty": "还没有 API Key 或官方供应商。",
+      "noMatch": "没有符合搜索条件的供应商。",
+      "official": "官方",
+      "apiKey": "API Key",
+      "manageInApp": "在 {{app}} 中管理",
+      "showAll": "显示全部 {{count}} 个",
+      "showLess": "收起"
+    },
     "group": {
       "helpTitle": "{{service}} 账号怎么用",
       "copilotHelp": "用于 Claude Code、Claude Desktop 的 GitHub Copilot 预设。没指定账号的供应商用「默认」账号。",

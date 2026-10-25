@@ -4975,6 +4975,18 @@
   },
   "authCenter": {
     "helpTitle": "授權中心是什麼",
+    "providers": {
+      "title": "供應商",
+      "description": "已在各 App 使用的 API Key 與官方供應商；憑證由來源 App 管理。",
+      "search": "搜尋供應商、App 或位址",
+      "empty": "還沒有 API Key 或官方供應商。",
+      "noMatch": "沒有符合搜尋條件的供應商。",
+      "official": "官方",
+      "apiKey": "API Key",
+      "manageInApp": "在 {{app}} 中管理",
+      "showAll": "顯示全部 {{count}} 個",
+      "showLess": "收起"
+    },
     "group": {
       "helpTitle": "{{service}} 帳號怎麼用",
       "copilotHelp": "用於 Claude Code、Claude Desktop 的 GitHub Copilot 預設。沒指定帳號的供應商用「預設」帳號。",

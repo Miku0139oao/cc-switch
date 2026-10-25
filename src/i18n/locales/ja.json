@@ -4974,6 +4974,18 @@
   },
   "authCenter": {
     "helpTitle": "アカウントとは",
+    "providers": {
+      "title": "プロバイダー",
+      "description": "各アプリで使用中の API キー／公式プロバイダーです。認証情報は元のアプリで管理されます。",
+      "search": "プロバイダー、アプリ、URL を検索",
+      "empty": "API キーまたは公式プロバイダーはまだありません。",
+      "noMatch": "検索条件に一致するプロバイダーはありません。",
+      "official": "公式",
+      "apiKey": "API キー",
+      "manageInApp": "{{app}} で管理",
+      "showAll": "すべて表示（{{count}}）",
+      "showLess": "折りたたむ"
+    },
     "group": {
       "helpTitle": "{{service}} アカウントの使い方",
       "copilotHelp": "Claude Code、Claude Desktop の GitHub Copilot プリセットで使います。アカウントを指定していないプロバイダーは「デフォルト」のアカウントを使います。",

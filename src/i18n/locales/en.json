@@ -4974,6 +4974,18 @@
   },
   "authCenter": {
     "helpTitle": "What is Accounts?",
+    "providers": {
+      "title": "Providers",
+      "description": "API-key and official providers already used by each app; credentials stay managed by their source app.",
+      "search": "Search providers, apps, or endpoints",
+      "empty": "No API-key or official providers yet.",
+      "noMatch": "No providers match this search.",
+      "official": "Official",
+      "apiKey": "API key",
+      "manageInApp": "Manage in {{app}}",
+      "showAll": "Show all {{count}}",
+      "showLess": "Show fewer"
+    },
     "group": {
       "helpTitle": "How {{service}} accounts are used",
       "copilotHelp": "Used by GitHub Copilot presets in Claude Code and Claude Desktop. Providers without a chosen account use the Default one.",

@@ -4964,6 +4964,18 @@
   },
   "authCenter": {
     "helpTitle": "Hesaplar Nedir?",
+    "providers": {
+      "title": "Sağlayıcılar",
+      "description": "Uygulamalarda kullanılan API anahtarı ve resmî sağlayıcılar; kimlik bilgileri kaynak uygulamada yönetilir.",
+      "search": "Sağlayıcı, uygulama veya adres ara",
+      "empty": "Henüz API anahtarı veya resmî sağlayıcı yok.",
+      "noMatch": "Bu aramayla eşleşen sağlayıcı yok.",
+      "official": "Resmî",
+      "apiKey": "API anahtarı",
+      "manageInApp": "{{app}} içinde yönet",
+      "showAll": "Tümünü göster ({{count}})",
+      "showLess": "Daha az göster"
+    },
     "group": {
       "helpTitle": "{{service}} hesapları nasıl kullanılır?",
       "copilotHelp": "Claude Code ve Claude Desktop'deki GitHub Copilot ön ayarları tarafından kullanılır. Seçilmiş bir hesaba sahip olmayan sağlayıcılar Varsayılan hesabı kullanır.",
