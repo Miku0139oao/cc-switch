@@ -1672,7 +1672,7 @@ function App() {
               className="min-h-0 flex-1 overflow-y-auto scroll-stable"
             >
               <div className="px-6 pb-10 pt-4">
-                <AuthCenterPanel showIntro={false} onOpenApp={selectApp} />
+                <AuthCenterPanel showIntro={false} />
               </div>
             </div>
           </>

@@ -5,13 +5,12 @@ import { CodexOAuthSection } from "@/components/providers/forms/CodexOAuthSectio
 import { XaiOAuthSection } from "@/components/providers/forms/XaiOAuthSection";
 import { AgyOAuthSection } from "@/components/providers/forms/AgyOAuthSection";
 import { KimiAccountLogin } from "@/components/providers/KimiAccountLogin";
-import { LocalProviderAccountsSection } from "@/components/settings/auth/LocalProviderAccounts";
+import { GlobalSupplierAccounts } from "@/components/settings/auth/GlobalSupplierAccounts";
 import { isMac } from "@/lib/platform";
-import type { AppId, AuthCenterTarget } from "@/lib/api";
+import type { AuthCenterTarget } from "@/lib/api";
 
 interface AuthCenterPanelProps {
   authScrollTarget?: AuthCenterTarget | null;
-  onOpenApp?: (appId: AppId) => void;
   /**
    * 页头没有「?」说明时（供应商表单里打开的全屏「授权中心」）在最上面写一行说明；
    * 侧栏「授权中心」页的页头已经有了，就不再显示。
@@ -26,7 +25,6 @@ interface AuthCenterPanelProps {
  */
 export function AuthCenterPanel({
   authScrollTarget,
-  onOpenApp,
   showIntro = true,
 }: AuthCenterPanelProps) {
   const { t } = useTranslation();
@@ -72,7 +70,7 @@ export function AuthCenterPanel({
           {t("settings.authCenter.description")}
         </p>
       )}
-      {onOpenApp && <LocalProviderAccountsSection onOpenApp={onOpenApp} />}
+      <GlobalSupplierAccounts />
       <div ref={copilotSectionRef} className="scroll-mt-4">
         <CopilotAuthSection />
       </div>

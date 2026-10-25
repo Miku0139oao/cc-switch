@@ -8406,23 +8406,28 @@ impl ProviderService {
         // 获取统一供应商（用于删除生成的子供应商）
         let provider = state.db.get_universal_provider(id)?;
 
+        for (app, child_id) in [
+            (AppType::Claude, format!("universal-claude-{id}")),
+            (AppType::Codex, format!("universal-codex-{id}")),
+            (AppType::Gemini, format!("universal-gemini-{id}")),
+        ] {
+            Self::ensure_universal_child_not_referenced(state, &app, &child_id)?;
+        }
+
         // 删除统一供应商
         state.db.delete_universal_provider(id)?;
 
         // 删除生成的子供应商
-        if let Some(p) = provider {
-            if p.apps.claude {
-                let claude_id = format!("universal-claude-{id}");
-                let _ = state.db.delete_provider("claude", &claude_id);
-            }
-            if p.apps.codex {
-                let codex_id = format!("universal-codex-{id}");
-                let _ = state.db.delete_provider("codex", &codex_id);
-            }
-            if p.apps.gemini {
-                let gemini_id = format!("universal-gemini-{id}");
-                let _ = state.db.delete_provider("gemini", &gemini_id);
-            }
+        if provider.is_some() {
+            let _ = state
+                .db
+                .delete_provider("claude", &format!("universal-claude-{id}"));
+            let _ = state
+                .db
+                .delete_provider("codex", &format!("universal-codex-{id}"));
+            let _ = state
+                .db
+                .delete_provider("gemini", &format!("universal-gemini-{id}"));
         }
 
         Ok(true)
@@ -8434,6 +8439,27 @@ impl ProviderService {
             .db
             .get_universal_provider(id)?
             .ok_or_else(|| AppError::Message(format!("统一供应商 {id} 不存在")))?;
+        for (enabled, app, child_id) in [
+            (
+                provider.apps.claude,
+                AppType::Claude,
+                format!("universal-claude-{id}"),
+            ),
+            (
+                provider.apps.codex,
+                AppType::Codex,
+                format!("universal-codex-{id}"),
+            ),
+            (
+                provider.apps.gemini,
+                AppType::Gemini,
+                format!("universal-gemini-{id}"),
+            ),
+        ] {
+            if !enabled {
+                Self::ensure_universal_child_not_referenced(state, &app, &child_id)?;
+            }
+        }
         // 子供应商经 save_provider 直接入库，不走保存校验，图标在这里把关
         icon::validate_icon(provider.icon.as_deref())?;
 
@@ -8523,6 +8549,25 @@ impl ProviderService {
                 live_failures.join("、")
             )))
         }
+    }
+
+    fn ensure_universal_child_not_referenced(
+        state: &AppState,
+        app: &AppType,
+        child_id: &str,
+    ) -> Result<(), AppError> {
+        if state
+            .db
+            .get_provider_by_id(child_id, app.as_str())?
+            .is_some()
+            && crate::mode::current::is_referenced(&state.db, app, child_id)?
+        {
+            return Err(AppError::Message(format!(
+                "{} 正在使用這個全域供應商；請先在該 Agent 切換到其他 provider。",
+                app.as_str()
+            )));
+        }
+        Ok(())
     }
 
     /// Re-project a generated universal child only when it is the effective
