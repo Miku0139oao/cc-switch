@@ -15,7 +15,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { Search, X } from "lucide-react";
+import { Globe2, Search, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "@/lib/toast";
@@ -57,6 +57,7 @@ import {
   buildAdditiveSections,
   buildLaunchSections,
   buildSwitchSections,
+  isUniversalProvider,
   type CardPresentation,
   type ProviderSection,
   type SwitchModeInput,
@@ -303,12 +304,15 @@ export function ProviderList({
           provider.notes,
           provider.websiteUrl,
           extractProviderBaseUrl(provider.settingsConfig),
+          isUniversalProvider(provider)
+            ? `${t("providerCard.chip.global")} universal global`
+            : "",
         ]
           .filter(Boolean)
           .join("\n")
           .toLowerCase(),
       })),
-    [sortedProviders],
+    [sortedProviders, t],
   );
 
   // 关掉面板就不再过滤：搜索词留着，下次打开还在，但列表不会悄悄少几家
@@ -558,6 +562,9 @@ export function ProviderList({
 
   const renderSectionTitle = (section: ProviderSection) => (
     <div className="flex items-center gap-1 text-caption font-semibold text-fg-2">
+      {section.key === "globalAvailable" && (
+        <Globe2 className="h-3.5 w-3.5 text-action-text" aria-hidden="true" />
+      )}
       <h2 className="m-0 text-caption font-semibold">{section.title}</h2>
       {section.help && (
         <HelpTip title={section.help.title}>{section.help.body}</HelpTip>

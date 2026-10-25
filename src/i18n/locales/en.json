@@ -4471,6 +4471,8 @@
       "moveDown": "Move {{name}} down"
     },
     "chip": {
+      "global": "Global",
+      "globalHint": "Created in the Auth Center and shared across agents. Adding it here only changes this agent.",
       "official": "Official",
       "needsRoute": "Needs routing",
       "directWhenDirect": "Used when direct",
@@ -4509,6 +4511,12 @@
       "addedHelp": "Added providers are written into {{app}}'s config. #0 has the highest fallback priority; if a five-hour, weekly or monthly quota is exhausted, the next available member is used.",
       "addedEmpty": "No providers added yet.",
       "available": "Available · {{count}}",
+      "globalAvailable": "Global providers · {{count}}",
+      "globalAvailableHelpTitle": "Global providers",
+      "globalAvailableHelp": "These providers are managed in the Auth Center and can be shared across agents. Adding one here does not change another agent's selection.",
+      "agentAvailable": "This agent's providers · {{count}}",
+      "agentAvailableHelpTitle": "This agent's providers",
+      "agentAvailableHelp": "These providers exist only in this agent's configuration and are not shared with other agents.",
       "stackNoDefault": "No default provider yet. You pick one when switching to Aggregation."
     }
   },

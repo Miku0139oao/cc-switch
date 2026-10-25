@@ -21,6 +21,7 @@ export type ChipTone =
   | "direct"
   | "route"
   | "stack"
+  | "global"
   | "success"
   | "warning"
   | "danger";
@@ -84,6 +85,10 @@ export interface ProviderSection {
   help?: { title: string; body: string };
   emptyText?: string;
   items: { provider: Provider; presentation: CardPresentation }[];
+}
+
+export function isUniversalProvider(provider: Pick<Provider, "id">): boolean {
+  return provider.id.startsWith("universal-");
 }
 
 /** 走路由时不能用的官方订阅（Codex 官方账号可以，靠客户端自己的登录）。 */
@@ -208,6 +213,12 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
   const official = (p: Provider) => isOfficialAccount(app, p);
 
   const chip = {
+    global: (): CardChip => ({
+      key: "global",
+      label: t("providerCard.chip.global"),
+      tone: "global",
+      title: t("providerCard.chip.globalHint"),
+    }),
     official: (): CardChip => ({
       key: "official",
       label: t("providerCard.chip.official"),
@@ -228,13 +239,18 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
       title: t("provider.directProviderHint"),
     }),
   };
+  const identityChips = (p: Provider): CardChip[] =>
+    isUniversalProvider(p) ? [chip.global()] : [];
   const base = (p: Provider) => {
-    const chips: CardChip[] = [];
+    const chips = identityChips(p);
     if (official(p)) chips.push(chip.official());
     if (providerNeedsRouting(app, p)) chips.push(chip.needsRoute(p));
     return chips;
   };
-  const officialOnly = (p: Provider) => (official(p) ? [chip.official()] : []);
+  const officialOnly = (p: Provider) => [
+    ...identityChips(p),
+    ...(official(p) ? [chip.official()] : []),
+  ];
   const blocked = (p: Provider, label: string, reason: string) => ({
     provider: p,
     presentation: {
@@ -384,6 +400,7 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
                   label: `P${index + 1}`,
                   tone: "outline" as const,
                 },
+                ...identityChips(p),
               ],
               showHealth: input.serviceRunning,
               buttons: [
@@ -565,6 +582,7 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
               priority,
             }),
           },
+          ...identityChips(p),
           modelsChip(p),
         ],
         menuItems: setDefaultItems(p),
@@ -616,11 +634,7 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
       return {
         provider: p,
         presentation: {
-          chips: official(p)
-            ? [chip.official()]
-            : providerNeedsRouting(app, p)
-              ? [chip.needsRoute(p)]
-              : [],
+          chips: base(p),
           // 还没添加的也能直接设为默认：后端会把默认那家一起加进名单
           menuItems: setDefaultItems(p),
           buttons: [
@@ -634,7 +648,13 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
       };
     });
 
-  return [
+  const globalAvailItems = availItems.filter((item) =>
+    isUniversalProvider(item.provider),
+  );
+  const agentAvailItems = availItems.filter(
+    (item) => !isUniversalProvider(item.provider),
+  );
+  const sections: ProviderSection[] = [
     {
       key: "default",
       title: on
@@ -657,12 +677,43 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
       emptyText: t("providerCard.section.stackEmpty"),
       items: memberItems,
     },
-    {
-      key: "available",
-      title: t("providerCard.section.available", { count: availItems.length }),
-      items: availItems,
-    },
   ];
+
+  if (globalAvailItems.length > 0) {
+    sections.push({
+      key: "globalAvailable",
+      title: t("providerCard.section.globalAvailable", {
+        count: globalAvailItems.length,
+      }),
+      help: {
+        title: t("providerCard.section.globalAvailableHelpTitle"),
+        body: t("providerCard.section.globalAvailableHelp"),
+      },
+      items: globalAvailItems,
+    });
+  }
+
+  if (agentAvailItems.length > 0) {
+    sections.push({
+      key: "available",
+      title: t(
+        globalAvailItems.length > 0
+          ? "providerCard.section.agentAvailable"
+          : "providerCard.section.available",
+        { count: agentAvailItems.length },
+      ),
+      help:
+        globalAvailItems.length > 0
+          ? {
+              title: t("providerCard.section.agentAvailableHelpTitle"),
+              body: t("providerCard.section.agentAvailableHelp"),
+            }
+          : undefined,
+      items: agentAvailItems,
+    });
+  }
+
+  return sections;
 }
 
 // ─── 启动器式应用（Antigravity）──────────────────────────────────────────────

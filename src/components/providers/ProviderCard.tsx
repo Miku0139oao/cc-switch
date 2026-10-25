@@ -79,6 +79,7 @@ const CHIP_CLASS: Record<CardChip["tone"], string> = {
   direct: "bg-direct-soft text-direct-text",
   route: "bg-route-soft text-route-text",
   stack: "bg-stack-soft text-stack-text",
+  global: "border border-action/25 bg-action-soft text-action-text",
   success: "bg-success-soft text-success-text",
   warning: "bg-warning-soft text-warning-text",
   danger: "bg-danger-soft text-danger-text",

@@ -322,6 +322,48 @@ describe("buildSwitchSections — route", () => {
 });
 
 describe("buildSwitchSections — stack", () => {
+  it("separates global providers from same-named agent providers", () => {
+    const local = provider("codex-local-quickrouter", {
+      name: "Quickrouter",
+    });
+    const universal = provider("universal-codex-uuid", {
+      name: "Quickrouter",
+    });
+    const { sections, input } = build({
+      app: "codex",
+      active: "stack",
+      view: "stack",
+      providers: [local, universal],
+      directId: null,
+      routeId: null,
+    });
+
+    expect(
+      sections.map((section) => [section.key, section.items.length]),
+    ).toEqual([
+      ["default", 0],
+      ["members", 0],
+      ["globalAvailable", 1],
+      ["available", 1],
+    ]);
+    expect(item(sections, universal.id)).toMatchObject({
+      section: "globalAvailable",
+      chips: [
+        {
+          key: "global",
+          label: "providerCard.chip.global",
+          tone: "global",
+        },
+      ],
+    });
+    expect(item(sections, local.id)).toMatchObject({
+      section: "available",
+      chips: [],
+    });
+    button(sections, universal.id, "add").onClick();
+    expect(input.actions.stackAdd).toHaveBeenCalledWith(universal);
+  });
+
   it("shows the default, members and available providers", () => {
     const { sections, input } = build({
       active: "stack",

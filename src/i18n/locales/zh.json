@@ -4471,6 +4471,8 @@
       "moveDown": "{{name}} 下移一位"
     },
     "chip": {
+      "global": "全局",
+      "globalHint": "在授权中心创建，可共享给多个 Agent；这里的加入与排序只影响当前 Agent。",
       "official": "官方",
       "needsRoute": "需要路由",
       "directWhenDirect": "直连时使用",
@@ -4509,6 +4511,12 @@
       "addedHelp": "已添加的供应商会写进 {{app}} 的配置；#0 的备援优先级最高，5 小时、每周或每月额度用完时会改用下一个可用成员。",
       "addedEmpty": "还没有添加供应商。",
       "available": "可添加 · {{count}}",
+      "globalAvailable": "全局供应商 · {{count}}",
+      "globalAvailableHelpTitle": "全局供应商",
+      "globalAvailableHelp": "这些供应商在授权中心统一管理，可以同步给多个 Agent。加入这里不会修改其他 Agent 的选择。",
+      "agentAvailable": "此 Agent 的供应商 · {{count}}",
+      "agentAvailableHelpTitle": "此 Agent 的供应商",
+      "agentAvailableHelp": "这些供应商只存在于当前 Agent 的配置中，不会同步到其他 Agent。",
       "stackNoDefault": "还没有默认供应商；切换到聚合模式时选一家。"
     }
   },

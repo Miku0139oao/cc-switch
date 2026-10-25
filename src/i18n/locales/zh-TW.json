@@ -4472,6 +4472,8 @@
       "moveDown": "{{name}} 下移一位"
     },
     "chip": {
+      "global": "全域",
+      "globalHint": "在授權中心建立，可共用給多個 Agent；此處的加入與排序只影響目前 Agent。",
       "official": "官方",
       "needsRoute": "需要路由",
       "directWhenDirect": "直連時使用",
@@ -4510,6 +4512,12 @@
       "addedHelp": "已加入的供應商會寫進 {{app}} 的設定；#0 的備援優先級最高，5 小時、每週或每月額度用完時會改用下一個可用成員。",
       "addedEmpty": "還沒有加入供應商。",
       "available": "可加入 · {{count}}",
+      "globalAvailable": "全域供應商 · {{count}}",
+      "globalAvailableHelpTitle": "全域供應商",
+      "globalAvailableHelp": "這些供應商在授權中心統一管理，可以同步給多個 Agent。加入這裡不會修改其他 Agent 的選擇。",
+      "agentAvailable": "此 Agent 的供應商 · {{count}}",
+      "agentAvailableHelpTitle": "此 Agent 的供應商",
+      "agentAvailableHelp": "這些供應商只存在於目前 Agent 的設定中，不會同步到其他 Agent。",
       "stackNoDefault": "還沒有預設供應商；切換到聚合模式時選一家。"
     }
   },
