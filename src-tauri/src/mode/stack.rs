@@ -825,7 +825,11 @@ pub(crate) fn fallback_targets(
     }
 
     let mut automatic = Vec::new();
-    for member in members {
+    let ordered = members
+        .iter()
+        .filter(|member| member.route)
+        .chain(members.iter().filter(|member| !member.route));
+    for member in ordered {
         if member.provider.id == primary_provider_id {
             continue;
         }
@@ -1538,8 +1542,9 @@ mod tests {
     fn implicit_fallbacks_follow_priority_even_before_the_primary_member() {
         let fx = fixture();
         state::update(&fx.store, |live| {
-            live.apps.get_mut("claude").unwrap().stack.members =
-                ["zhipu", "kimi"].map(str::to_string).to_vec();
+            let claude = live.apps.get_mut("claude").unwrap();
+            claude.proxy_route = Some("zhipu".to_string());
+            claude.stack.members = ["kimi", "zhipu"].map(str::to_string).to_vec();
         })
         .unwrap();
 
