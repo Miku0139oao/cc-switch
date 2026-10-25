@@ -637,7 +637,7 @@ pub struct StackTarget {
     pub upstream_model: String,
     /// 客户端发来的带前缀 id（只用于日志展示）。
     pub original_model: String,
-    /// Explicit fallbacks in user-configured order.
+    /// Resolved fallback attempts in their effective order.
     pub fallbacks: Vec<ResolvedFallback>,
 }
 
@@ -747,15 +747,7 @@ pub fn resolve_with_quota(
     });
     let route = state::mode_state(store, app.as_str())?.proxy_route;
     let members = members(db, app, &stack, route.as_deref())?;
-    let fallbacks = resolve_fallbacks(
-        db,
-        app,
-        &stack,
-        model,
-        &provider.id,
-        &upstream_model,
-        &members,
-    )?;
+    let fallbacks = resolve_fallbacks(app, &stack, model, &provider.id, &upstream_model, &members);
     let (provider, upstream_model, fallbacks) =
         prefer_available_attempts(app, quota_cache, provider, upstream_model, fallbacks);
     Ok(Resolved::Hit(Box::new(StackTarget {
@@ -767,18 +759,58 @@ pub fn resolve_with_quota(
 }
 
 fn resolve_fallbacks(
-    db: &Database,
     app: &AppType,
     stack: &StackState,
     published_model: &str,
     primary_provider_id: &str,
     primary_upstream_model: &str,
     members: &[Member],
-) -> Result<Vec<ResolvedFallback>, AppError> {
-    let mut resolved = Vec::new();
+) -> Vec<ResolvedFallback> {
+    let by_provider = members
+        .iter()
+        .map(|member| (member.provider.id.as_str(), member))
+        .collect::<std::collections::HashMap<_, _>>();
+    fallback_targets(
+        app,
+        stack,
+        published_model,
+        primary_provider_id,
+        primary_upstream_model,
+        members,
+    )
+    .into_iter()
+    .filter_map(|target| {
+        by_provider
+            .get(target.provider_id.as_str())
+            .map(|member| ResolvedFallback {
+                provider: member.provider.clone(),
+                upstream_model: target.upstream_model,
+            })
+    })
+    .collect()
+}
+
+/// Resolve the actual ordered fallback targets for one published model.
+///
+/// Explicit per-model chains win. Without one, every other active member is
+/// tried in Stack priority order. Prefer the same upstream model when the
+/// provider offers it; otherwise use that provider's first configured model.
+pub(crate) fn fallback_targets(
+    app: &AppType,
+    stack: &StackState,
+    published_model: &str,
+    primary_provider_id: &str,
+    primary_upstream_model: &str,
+    members: &[Member],
+) -> Vec<state::StackFallbackTarget> {
+    let active = members
+        .iter()
+        .map(|member| member.provider.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
     let mut seen = std::collections::HashSet::new();
+    let mut explicit = Vec::new();
     for target in stack.fallbacks.get(published_model).into_iter().flatten() {
-        if !stack.is_member(&target.provider_id)
+        if !active.contains(target.provider_id.as_str())
             || !seen.insert((target.provider_id.clone(), target.upstream_model.clone()))
         {
             continue;
@@ -786,66 +818,58 @@ fn resolve_fallbacks(
         if target.provider_id == primary_provider_id && target.upstream_model.trim().is_empty() {
             continue;
         }
-        let Some(provider) = db.get_provider_by_id(&target.provider_id, app.as_str())? else {
-            continue;
-        };
-        resolved.push(ResolvedFallback {
-            provider,
-            upstream_model: target.upstream_model.clone(),
-        });
+        explicit.push(target.clone());
     }
-    if !resolved.is_empty() {
-        return Ok(resolved);
+    if !explicit.is_empty() {
+        return explicit;
     }
 
-    // With no explicit chain, match the same upstream model across joined
-    // providers in Stack priority order. Never silently substitute a different
-    // model; cross-model fallbacks remain explicit user choices.
+    let mut automatic = Vec::new();
     for member in members {
         if member.provider.id == primary_provider_id {
             continue;
         }
         let Some(upstream_model) = matching_upstream_model(app, member, primary_upstream_model)
+            .or_else(|| member_upstream_models(app, member).into_iter().next())
         else {
             continue;
         };
         if !seen.insert((member.provider.id.clone(), upstream_model.clone())) {
             continue;
         }
-        resolved.push(ResolvedFallback {
-            provider: member.provider.clone(),
+        automatic.push(state::StackFallbackTarget {
+            provider_id: member.provider.id.clone(),
             upstream_model,
         });
     }
-    Ok(resolved)
+    automatic
 }
 
 fn matching_upstream_model(app: &AppType, member: &Member, desired: &str) -> Option<String> {
-    let desired = strip_one_m_suffix_for_upstream(desired)
-        .trim()
-        .to_ascii_lowercase();
+    let desired = normalize_upstream_model(desired);
+    member_upstream_models(app, member)
+        .into_iter()
+        .find(|model| normalize_upstream_model(model) == desired)
+}
+
+fn member_upstream_models(app: &AppType, member: &Member) -> Vec<String> {
     match app {
         AppType::Claude => claude_models(&member.key, &member.provider)
             .into_iter()
-            .find(|model| {
-                strip_one_m_suffix_for_upstream(&model.upstream)
-                    .trim()
-                    .to_ascii_lowercase()
-                    == desired
-            })
-            .map(|model| model.upstream),
+            .map(|model| model.upstream)
+            .collect(),
         AppType::ClaudeDesktop => desktop_models(&member.key, &member.provider)
             .into_iter()
-            .find(|model| model.upstream.trim().to_ascii_lowercase() == desired)
-            .map(|model| model.upstream),
-        _ => codex_model_ids(&member.key, &member.provider)
-            .into_iter()
-            .filter_map(|id| {
-                id.split_once(CODEX_SEPARATOR)
-                    .map(|(_, model)| model.to_string())
-            })
-            .find(|model| model.trim().to_ascii_lowercase() == desired),
+            .map(|model| model.upstream)
+            .collect(),
+        _ => codex_models(&member.provider),
     }
+}
+
+fn normalize_upstream_model(model: &str) -> String {
+    strip_one_m_suffix_for_upstream(model)
+        .trim()
+        .to_ascii_lowercase()
 }
 
 fn prefer_available_attempts(
@@ -921,14 +945,13 @@ fn resolve_desktop(
             .find(|published| published.id == id)
         {
             let fallbacks = resolve_fallbacks(
-                db,
                 app,
                 &stack,
                 model,
                 &member.provider.id,
                 &found.upstream,
                 &members,
-            )?;
+            );
             let (provider, upstream_model, fallbacks) = prefer_available_attempts(
                 app,
                 quota_cache,
@@ -1033,6 +1056,10 @@ pub struct StackView {
     /// Explicit fallback chains keyed by the model id published to the client.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub fallbacks: std::collections::BTreeMap<String, Vec<state::StackFallbackTarget>>,
+    /// Effective fallback targets after applying an explicit override or the
+    /// automatic Stack priority order.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub effective_fallbacks: std::collections::BTreeMap<String, Vec<state::StackFallbackTarget>>,
 }
 
 pub fn member_views(app: &AppType, members: &[Member]) -> Vec<StackMemberView> {
@@ -1462,10 +1489,13 @@ mod tests {
     }
 
     #[test]
-    fn implicit_fallbacks_follow_member_priority_for_the_same_model() {
+    fn implicit_fallbacks_follow_member_priority_across_models() {
         let fx = fixture();
-        for id in ["backup-a", "backup-b"] {
-            let row = provider(id, id, None, json!({ "ANTHROPIC_MODEL": "kimi-k3" }));
+        for (id, model) in [
+            ("backup-a", "backup-a-model"),
+            ("backup-b", "backup-b-model"),
+        ] {
+            let row = provider(id, id, None, json!({ "ANTHROPIC_MODEL": model }));
             fx.db.save_provider("claude", &row).unwrap();
         }
         state::update(&fx.store, |live| {
@@ -1494,10 +1524,37 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["backup-b", "backup-a"]
         );
+        assert_eq!(
+            target
+                .fallbacks
+                .iter()
+                .map(|fallback| fallback.upstream_model.as_str())
+                .collect::<Vec<_>>(),
+            vec!["backup-b-model", "backup-a-model"]
+        );
     }
 
     #[test]
-    fn known_exhausted_primary_promotes_the_next_healthy_same_model_member() {
+    fn implicit_fallbacks_follow_priority_even_before_the_primary_member() {
+        let fx = fixture();
+        state::update(&fx.store, |live| {
+            live.apps.get_mut("claude").unwrap().stack.members =
+                ["zhipu", "kimi"].map(str::to_string).to_vec();
+        })
+        .unwrap();
+
+        let Resolved::Hit(target) = resolve_in(&fx, AppType::Claude, "ccs-claude-kimi--kimi-k3")
+        else {
+            panic!("expected primary model");
+        };
+        assert_eq!(target.provider.id, "kimi");
+        assert_eq!(target.fallbacks.len(), 1);
+        assert_eq!(target.fallbacks[0].provider.id, "zhipu");
+        assert_eq!(target.fallbacks[0].upstream_model, "glm-5.2[1M]");
+    }
+
+    #[test]
+    fn known_exhausted_primary_promotes_the_next_priority_member() {
         let fx = fixture();
         let backup = provider(
             "backup",
@@ -1546,10 +1603,12 @@ mod tests {
             panic!("expected primary model");
         };
 
-        assert_eq!(target.provider.id, "backup");
-        assert_eq!(target.upstream_model, "kimi-k3");
-        assert_eq!(target.fallbacks.len(), 1);
-        assert_eq!(target.fallbacks[0].provider.id, "kimi");
+        assert_eq!(target.provider.id, "zhipu");
+        assert_eq!(target.upstream_model, "glm-5.2[1M]");
+        assert_eq!(target.fallbacks.len(), 2);
+        assert_eq!(target.fallbacks[0].provider.id, "backup");
+        assert_eq!(target.fallbacks[0].upstream_model, "kimi-k3");
+        assert_eq!(target.fallbacks[1].provider.id, "kimi");
     }
 
     fn miss(resolved: Resolved) -> StackMiss {

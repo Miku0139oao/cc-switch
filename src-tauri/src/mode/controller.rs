@@ -1445,15 +1445,40 @@ pub fn stack_views(state: &AppState, app: &AppType) -> Result<StackView, String>
                 .iter()
                 .any(|member| member.model_ids.contains(model))
     });
+    let member_views = stack::member_views(app, &members);
+    let mut effective_fallbacks = std::collections::BTreeMap::new();
+    for member in &member_views {
+        for model_id in &member.model_ids {
+            let Some(model) = member
+                .models
+                .iter()
+                .find(|model| model.id == model_id.as_str())
+            else {
+                continue;
+            };
+            let targets = stack::fallback_targets(
+                app,
+                &stack,
+                model_id,
+                &member.provider_id,
+                &model.upstream_model,
+                &members,
+            );
+            if !targets.is_empty() {
+                effective_fallbacks.insert(model_id.clone(), targets);
+            }
+        }
+    }
     Ok(StackView {
         active: mode.is_proxy() && stack.enabled,
-        members: stack::member_views(app, &members),
+        members: member_views,
         notice,
         notice_reasons,
         stale_clients: None,
         stale_revision: None,
         subagent_models,
         fallbacks,
+        effective_fallbacks,
     })
 }
 

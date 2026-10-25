@@ -287,8 +287,11 @@ impl RequestContext {
                 (0, 0, 0)
             };
 
-        // 故障转移关闭时强制 max_retries=0（仅尝试 1 个 provider），与「不超时 + 不切换」语义一致。
-        let max_retries = if self.app_config.auto_failover_enabled {
+        // Stack requests have an explicit ordered attempt list; try the whole
+        // list instead of stopping at the ordinary route-mode retry setting.
+        let max_retries = if self.is_stack {
+            stack_max_retries(self.providers.len())
+        } else if self.app_config.auto_failover_enabled {
             self.app_config.max_retries
         } else {
             0
@@ -373,9 +376,20 @@ pub(crate) fn extract_gemini_model_from_path(endpoint: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+fn stack_max_retries(provider_count: usize) -> u32 {
+    u32::try_from(provider_count.saturating_sub(1)).unwrap_or(u32::MAX)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::extract_gemini_model_from_path;
+    use super::{extract_gemini_model_from_path, stack_max_retries};
+
+    #[test]
+    fn stack_requests_retry_every_configured_provider() {
+        assert_eq!(stack_max_retries(0), 0);
+        assert_eq!(stack_max_retries(1), 0);
+        assert_eq!(stack_max_retries(6), 5);
+    }
 
     #[test]
     fn extract_model_with_action() {

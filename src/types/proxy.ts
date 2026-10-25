@@ -200,6 +200,8 @@ export interface ProxyStack {
   subagentModels?: ProxyStackSubagentModel[];
   /** Explicit fallback chains keyed by the model id published to the client. */
   fallbacks?: ProxyStackFallbacks;
+  /** Effective chains: an explicit override, or the automatic Stack priority order. */
+  effectiveFallbacks?: ProxyStackFallbacks;
 }
 
 /** 重启 Codex 守护进程的结果：`notRunning` 表示它没在运行，什么都没做。 */

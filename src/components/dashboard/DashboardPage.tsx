@@ -15,7 +15,7 @@ import {
 import { toast } from "@/lib/toast";
 import type { AppId } from "@/lib/api";
 import type { Provider } from "@/types";
-import type { AppMode } from "@/types/proxy";
+import type { AppMode, ProxyStackFallbacks } from "@/types/proxy";
 import {
   isModeAppId,
   isProxyAppId,
@@ -304,12 +304,15 @@ export function DashboardPage({
                     : "direct";
                 const stack = stackQueries[index]?.data;
                 const health = healthQueries[index]?.data;
-                const fallbackCount = Object.values(
-                  stack?.fallbacks ?? {},
-                ).reduce((sum, chain) => sum + chain.length, 0);
+                const effectiveFallbacks: ProxyStackFallbacks =
+                  stack?.effectiveFallbacks ?? stack?.fallbacks ?? {};
+                const fallbackCount = Object.values(effectiveFallbacks).reduce(
+                  (sum, chain) => sum + chain.length,
+                  0,
+                );
                 const fallbackProviderIds = Array.from(
                   new Set(
-                    Object.values(stack?.fallbacks ?? {})
+                    Object.values(effectiveFallbacks)
                       .map((chain) => chain[0]?.providerId)
                       .filter((id): id is string => Boolean(id)),
                   ),

@@ -8470,6 +8470,30 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn stack_fallback_uses_each_attempts_own_model() {
+            let up1 = upstream(vec![error(503, "temporarily unavailable")]).await;
+            let up2 = upstream(vec![ok()]).await;
+            let fwd = forwarder(2, "p1")
+                .stack_request(true)
+                .stack_attempt_models(vec![
+                    "provider-one-model".to_string(),
+                    "provider-two-model".to_string(),
+                ])
+                .failover_enabled(true);
+
+            let result = send(
+                &fwd,
+                vec![provider("p1", &up1), provider("p2", &up2)],
+                plain_body(),
+            )
+            .await;
+
+            assert_eq!(result.ok().map(|r| r.provider.id), Some("p2".into()));
+            assert_eq!(up1.requests.lock().await[0]["model"], "provider-one-model");
+            assert_eq!(up2.requests.lock().await[0]["model"], "provider-two-model");
+        }
+
+        #[tokio::test]
         async fn non_retryable_error_is_neutral_for_the_breaker() {
             let up = upstream(vec![error(400, "bad request")]).await;
             let fwd = forwarder(1, "p1");

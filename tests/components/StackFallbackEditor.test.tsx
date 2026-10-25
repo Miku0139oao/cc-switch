@@ -47,9 +47,7 @@ const stack: ProxyStack = {
     },
   ],
   fallbacks: {
-    "ccs-claude-kimi--kimi-k3": [
-      { providerId: "glm", upstreamModel: "glm-5" },
-    ],
+    "ccs-claude-kimi--kimi-k3": [{ providerId: "glm", upstreamModel: "glm-5" }],
   },
 };
 
@@ -73,5 +71,30 @@ describe("StackFallbackEditor", () => {
       />,
     );
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("shows the automatic priority chain when no explicit override exists", () => {
+    const autoStack: ProxyStack = {
+      ...stack,
+      fallbacks: undefined,
+      effectiveFallbacks: {
+        "ccs-claude-kimi--kimi-k3": [
+          { providerId: "glm", upstreamModel: "glm-5" },
+        ],
+        "ccs-claude-glm--glm-5": [
+          { providerId: "kimi", upstreamModel: "kimi-k3" },
+        ],
+      },
+    };
+
+    render(
+      <StackFallbackEditor
+        app="claude"
+        stack={autoStack}
+        providers={providers}
+      />,
+    );
+
+    expect(screen.getAllByText(/mode\.fallback\.autoCount/)).toHaveLength(2);
   });
 });

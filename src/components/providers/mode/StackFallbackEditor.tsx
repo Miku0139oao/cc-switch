@@ -105,6 +105,11 @@ export function StackFallbackEditor({
         upstreamModel: editing.model.upstreamModel,
       })
     : "";
+  const automaticChain = editing
+    ? (stack?.effectiveFallbacks?.[editing.model.id] ?? [])
+    : [];
+  const usingAutomatic = draft.length === 0 && automaticChain.length > 0;
+  const previewChain = usingAutomatic ? automaticChain : draft;
   const usedKeys = new Set(draft.map(targetKey));
   const candidates = allModels.filter(
     (item) => modelKey(item) !== primaryKey && !usedKeys.has(modelKey(item)),
@@ -161,7 +166,10 @@ export function StackFallbackEditor({
       </div>
       <div className="divide-y divide-border">
         {primary.map((item) => {
-          const chain = stack.fallbacks?.[item.model.id] ?? [];
+          const explicitChain = stack.fallbacks?.[item.model.id] ?? [];
+          const chain =
+            stack.effectiveFallbacks?.[item.model.id] ?? explicitChain;
+          const automatic = explicitChain.length === 0 && chain.length > 0;
           return (
             <div
               key={item.model.id}
@@ -173,9 +181,11 @@ export function StackFallbackEditor({
                 </div>
                 <div className="truncate text-caption text-fg-2">
                   {item.providerName} ·{" "}
-                  {chain.length
-                    ? t("mode.fallback.count", { count: chain.length })
-                    : t("mode.fallback.none")}
+                  {automatic
+                    ? t("mode.fallback.autoCount", { count: chain.length })
+                    : chain.length
+                      ? t("mode.fallback.count", { count: chain.length })
+                      : t("mode.fallback.none")}
                 </div>
               </div>
               <Button
@@ -211,7 +221,17 @@ export function StackFallbackEditor({
                 </span>
                 {editing.model.displayName} · {editing.providerName}
               </div>
-              {draft.map((target, index) => (
+              {usingAutomatic && (
+                <div className="rounded-control border border-stack-border bg-stack-soft px-3 py-2">
+                  <div className="text-caption font-semibold text-stack-text">
+                    {t("mode.fallback.automaticTitle")}
+                  </div>
+                  <div className="mt-0.5 text-caption text-fg-2">
+                    {t("mode.fallback.automaticHint")}
+                  </div>
+                </div>
+              )}
+              {previewChain.map((target, index) => (
                 <div
                   key={`${targetKey(target)}-${index}`}
                   className="flex items-center gap-2 rounded-control border border-border px-3 py-2"
@@ -222,39 +242,43 @@ export function StackFallbackEditor({
                   <span className="min-w-0 flex-1 truncate text-body">
                     {labelOf(target)}
                   </span>
-                  <Button
-                    type="button"
-                    variant="quiet"
-                    size="icon-compact"
-                    disabled={index === 0}
-                    aria-label={t("mode.fallback.moveUp")}
-                    onClick={() => move(index, -1)}
-                  >
-                    <ArrowUp className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="quiet"
-                    size="icon-compact"
-                    disabled={index === draft.length - 1}
-                    aria-label={t("mode.fallback.moveDown")}
-                    onClick={() => move(index, 1)}
-                  >
-                    <ArrowDown className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="quiet"
-                    size="icon-compact"
-                    aria-label={t("common.remove")}
-                    onClick={() =>
-                      setDraft((current) =>
-                        current.filter((_, item) => item !== index),
-                      )
-                    }
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </Button>
+                  {!usingAutomatic && (
+                    <>
+                      <Button
+                        type="button"
+                        variant="quiet"
+                        size="icon-compact"
+                        disabled={index === 0}
+                        aria-label={t("mode.fallback.moveUp")}
+                        onClick={() => move(index, -1)}
+                      >
+                        <ArrowUp className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="quiet"
+                        size="icon-compact"
+                        disabled={index === draft.length - 1}
+                        aria-label={t("mode.fallback.moveDown")}
+                        onClick={() => move(index, 1)}
+                      >
+                        <ArrowDown className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="quiet"
+                        size="icon-compact"
+                        aria-label={t("common.remove")}
+                        onClick={() =>
+                          setDraft((current) =>
+                            current.filter((_, item) => item !== index),
+                          )
+                        }
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </Button>
+                    </>
+                  )}
                 </div>
               ))}
 
