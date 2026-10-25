@@ -135,9 +135,29 @@ pub struct StackState {
     /// only the explicit ordered fallbacks.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub fallbacks: BTreeMap<String, Vec<StackFallbackTarget>>,
+    /// How a new aggregated-model session chooses its first provider.
+    #[serde(default)]
+    pub balance_strategy: BalanceStrategy,
+    /// Provider-level weights used by weighted and least-load balancing.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub balance_weights: BTreeMap<String, u32>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
+
+/// App-level first-attempt policy for aggregated models.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BalanceStrategy {
+    #[default]
+    Priority,
+    RoundRobin,
+    WeightedRoundRobin,
+    LeastLoad,
+}
+
+pub const MIN_BALANCE_WEIGHT: u32 = 1;
+pub const MAX_BALANCE_WEIGHT: u32 = 100;
 
 /// One explicit fallback for an aggregated model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,12 +177,22 @@ pub struct SessionRoute {
     pub upstream_model: String,
 }
 
+/// A persisted automatic choice for one session/model pair.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BalancedSession {
+    pub provider_id: String,
+    pub upstream_model: String,
+}
+
 impl StackState {
     pub fn is_empty(&self) -> bool {
         !self.enabled
             && self.members.is_empty()
             && self.keys.is_empty()
             && self.fallbacks.is_empty()
+            && self.balance_strategy == BalanceStrategy::Priority
+            && self.balance_weights.is_empty()
             && self.extra.is_empty()
     }
 
@@ -176,6 +206,14 @@ impl StackState {
 
     pub fn is_member(&self, provider_id: &str) -> bool {
         self.members.iter().any(|id| id == provider_id)
+    }
+
+    pub fn weight_for(&self, provider_id: &str) -> u32 {
+        self.balance_weights
+            .get(provider_id)
+            .copied()
+            .unwrap_or(MIN_BALANCE_WEIGHT)
+            .clamp(MIN_BALANCE_WEIGHT, MAX_BALANCE_WEIGHT)
     }
 
     /// Drop fallbacks that no longer belong to an active Stack member. Kept
@@ -211,6 +249,9 @@ pub struct AppLiveState {
     /// is device-local and can be updated atomically without a schema change.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub session_routes: BTreeMap<String, SessionRoute>,
+    /// Session id -> published model id -> automatic balancing target.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub balanced_sessions: BTreeMap<String, BTreeMap<String, BalancedSession>>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -221,6 +262,7 @@ impl AppLiveState {
             && self.written.is_none()
             && self.stack.is_empty()
             && self.session_routes.is_empty()
+            && self.balanced_sessions.is_empty()
             && self.mode_state() == ModeState::default()
             && self.extra.is_empty()
     }
@@ -386,6 +428,24 @@ pub fn update<R>(
     Ok(result)
 }
 
+/// Read-modify-write, but skip the file write when the projection did not
+/// change. High-frequency routing checks can use this without churning state.
+pub fn update_if_changed<R>(
+    store: &DeviceStore,
+    change: impl FnOnce(&mut LiveState) -> R,
+) -> Result<(R, bool), AppError> {
+    let _guard = state_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = load(store)?;
+    let before = state.clone();
+    let result = change(&mut state);
+    state.apps.retain(|_, app| !app.is_empty());
+    if state == before {
+        return Ok((result, false));
+    }
+    save(store, &state)?;
+    Ok((result, true))
+}
+
 pub fn pending(store: &DeviceStore, app: &str) -> Result<Option<Pending>, AppError> {
     let _guard = state_lock().lock().unwrap_or_else(|e| e.into_inner());
     Ok(load(store)?
@@ -456,6 +516,134 @@ pub fn session_routes(
         .get(app)
         .map(|state| state.session_routes.clone())
         .unwrap_or_default())
+}
+
+pub fn balanced_sessions(
+    store: &DeviceStore,
+    app: &str,
+) -> Result<BTreeMap<String, BTreeMap<String, BalancedSession>>, AppError> {
+    let _guard = state_lock().lock().unwrap_or_else(|e| e.into_inner());
+    Ok(load(store)?
+        .apps
+        .get(app)
+        .map(|state| state.balanced_sessions.clone())
+        .unwrap_or_default())
+}
+
+pub fn balanced_session(
+    store: &DeviceStore,
+    app: &str,
+    session_id: &str,
+    logical_model: &str,
+) -> Result<Option<BalancedSession>, AppError> {
+    Ok(balanced_sessions(store, app)?
+        .get(session_id)
+        .and_then(|models| models.get(logical_model))
+        .cloned())
+}
+
+/// Store an automatic assignment only when it actually changed.
+pub fn remember_balanced_session(
+    store: &DeviceStore,
+    app: &str,
+    session_id: &str,
+    logical_model: &str,
+    assignment: BalancedSession,
+) -> Result<bool, AppError> {
+    let (_, changed) = update_if_changed(store, |live| {
+        let models = live
+            .apps
+            .entry(app.to_string())
+            .or_default()
+            .balanced_sessions
+            .entry(session_id.to_string())
+            .or_default();
+        if models.get(logical_model) != Some(&assignment) {
+            models.insert(logical_model.to_string(), assignment);
+        }
+    })?;
+    Ok(changed)
+}
+
+/// Clear only if the failed target is still current. A concurrent request may
+/// already have moved the session elsewhere.
+pub fn clear_balanced_session_if_target(
+    store: &DeviceStore,
+    app: &str,
+    session_id: &str,
+    logical_model: &str,
+    provider_id: &str,
+    upstream_model: &str,
+) -> Result<bool, AppError> {
+    let (_, changed) = update_if_changed(store, |live| {
+        let Some(sessions) = live
+            .apps
+            .get_mut(app)
+            .map(|state| &mut state.balanced_sessions)
+        else {
+            return;
+        };
+        let Some(models) = sessions.get_mut(session_id) else {
+            return;
+        };
+        let matches = models.get(logical_model).is_some_and(|target| {
+            target.provider_id == provider_id && target.upstream_model == upstream_model
+        });
+        if matches {
+            models.remove(logical_model);
+        }
+        if models.is_empty() {
+            sessions.remove(session_id);
+        }
+    })?;
+    Ok(changed)
+}
+
+pub fn clear_balanced_sessions_for_session(
+    store: &DeviceStore,
+    app: &str,
+    session_id: &str,
+) -> Result<bool, AppError> {
+    let (_, changed) = update_if_changed(store, |live| {
+        if let Some(state) = live.apps.get_mut(app) {
+            state.balanced_sessions.remove(session_id);
+        }
+    })?;
+    Ok(changed)
+}
+
+pub fn clear_balanced_sessions_for_provider(
+    store: &DeviceStore,
+    app: &str,
+    provider_id: &str,
+) -> Result<bool, AppError> {
+    let (_, changed) = update_if_changed(store, |live| {
+        let Some(state) = live.apps.get_mut(app) else {
+            return;
+        };
+        state.balanced_sessions.retain(|_, models| {
+            models.retain(|_, target| target.provider_id != provider_id);
+            !models.is_empty()
+        });
+    })?;
+    Ok(changed)
+}
+
+pub fn clear_balanced_sessions_for_model(
+    store: &DeviceStore,
+    app: &str,
+    logical_model: &str,
+) -> Result<bool, AppError> {
+    let (_, changed) = update_if_changed(store, |live| {
+        let Some(state) = live.apps.get_mut(app) else {
+            return;
+        };
+        state.balanced_sessions.retain(|_, models| {
+            models.remove(logical_model);
+            !models.is_empty()
+        });
+    })?;
+    Ok(changed)
 }
 
 /// 这个应用在 Stack 模式（代理模式且 Stack 模式开着），状态文件只读一次。
@@ -533,6 +721,62 @@ mod tests {
         assert_eq!(
             raw,
             json!({"version": 2, "future": true, "apps": {"codex": {"mode": "proxy"}}})
+        );
+    }
+
+    #[test]
+    fn legacy_stack_state_defaults_to_priority_and_unit_weights() {
+        let legacy = json!({
+            "version": 1,
+            "apps": {
+                "claude": {
+                    "stack": {
+                        "enabled": true,
+                        "members": ["a", "b"],
+                        "keys": {"a": "a", "b": "b"}
+                    }
+                }
+            }
+        });
+        let state: LiveState = serde_json::from_value(legacy).unwrap();
+        let stack = &state.apps["claude"].stack;
+        assert_eq!(stack.balance_strategy, BalanceStrategy::Priority);
+        assert!(stack.balance_weights.is_empty());
+        assert_eq!(stack.weight_for("a"), 1);
+        assert_eq!(stack.weight_for("missing"), 1);
+    }
+
+    #[test]
+    fn balance_policy_and_session_assignments_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DeviceStore::at(dir.path());
+        update(&store, |live| {
+            let app = live.apps.entry("codex".to_string()).or_default();
+            app.stack.balance_strategy = BalanceStrategy::WeightedRoundRobin;
+            app.stack.balance_weights.insert("a".to_string(), 3);
+            app.balanced_sessions
+                .entry("thread-1".to_string())
+                .or_default()
+                .insert(
+                    "ccs-a/model-a".to_string(),
+                    BalancedSession {
+                        provider_id: "a".to_string(),
+                        upstream_model: "model-a".to_string(),
+                    },
+                );
+        })
+        .unwrap();
+
+        let loaded = load(&store).unwrap();
+        let app = &loaded.apps["codex"];
+        assert_eq!(
+            app.stack.balance_strategy,
+            BalanceStrategy::WeightedRoundRobin
+        );
+        assert_eq!(app.stack.weight_for("a"), 3);
+        assert_eq!(
+            app.balanced_sessions["thread-1"]["ccs-a/model-a"].provider_id,
+            "a"
         );
     }
 

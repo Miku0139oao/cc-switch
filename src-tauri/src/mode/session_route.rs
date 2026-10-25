@@ -85,17 +85,21 @@ pub fn set_route(
     }
 
     state::update(store, |live| {
-        live.apps
+        let app = live
+            .apps
             .entry(AppType::Codex.as_str().to_string())
-            .or_default()
-            .session_routes
-            .insert(
-                session_id,
-                SessionRoute {
-                    provider_id: provider_id.to_string(),
-                    upstream_model: upstream_model.to_string(),
-                },
-            );
+            .or_default();
+        // A manual pin supersedes every automatic model assignment for this
+        // thread. Clearing them now prevents an old assignment resurfacing when
+        // the pin is later removed.
+        app.balanced_sessions.remove(session_id.as_str());
+        app.session_routes.insert(
+            session_id,
+            SessionRoute {
+                provider_id: provider_id.to_string(),
+                upstream_model: upstream_model.to_string(),
+            },
+        );
     })?;
     Ok(())
 }
@@ -167,6 +171,8 @@ pub fn resolve_request(
         upstream_model: route.upstream_model,
         original_model,
         fallbacks: Vec::new(),
+        balance_policy: state::StackState::default(),
+        balance: None,
     }))
 }
 
@@ -225,7 +231,26 @@ mod tests {
         assert_eq!(first.upstream_model, "model-a");
         assert_eq!(first.original_model, "client-model");
 
+        state::update(&store, |live| {
+            live.apps
+                .entry("codex".into())
+                .or_default()
+                .balanced_sessions
+                .entry(session.into())
+                .or_default()
+                .insert(
+                    "ccs-claude--model".into(),
+                    state::BalancedSession {
+                        provider_id: "alpha".into(),
+                        upstream_model: "model-a".into(),
+                    },
+                );
+        })
+        .unwrap();
         set_route(&db, &store, session, "beta", "model-b").unwrap();
+        assert!(!state::balanced_sessions(&store, "codex")
+            .unwrap()
+            .contains_key(session));
         let second = resolve_request(&db, &store, &headers, &body)
             .unwrap()
             .expect("updated route");

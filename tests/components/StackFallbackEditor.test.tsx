@@ -53,6 +53,9 @@ const stack: ProxyStack = {
   fallbacks: {
     "ccs-claude-kimi--kimi-k3": [{ providerId: "glm", upstreamModel: "glm-5" }],
   },
+  balanceStrategy: "priority",
+  balanceWeights: { kimi: 1, glm: 1 },
+  balancedSessionCount: 0,
 };
 
 describe("StackFallbackEditor", () => {
@@ -70,7 +73,13 @@ describe("StackFallbackEditor", () => {
     const { container } = render(
       <StackFallbackEditor
         app="claude"
-        stack={{ active: false, members: [] }}
+        stack={{
+          active: false,
+          members: [],
+          balanceStrategy: "priority",
+          balanceWeights: {},
+          balancedSessionCount: 0,
+        }}
         providers={providers}
       />,
     );

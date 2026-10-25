@@ -4173,7 +4173,7 @@
     "quota": "Key quota",
     "directState": "Direct connection",
     "routeQueue": "Route target · {{count}}",
-    "stackState": "{{members}} providers · {{fallbacks}} fallbacks",
+    "stackState": "{{strategy}} · {{members}} providers · {{fallbacks}} fallbacks",
     "service": "Local router",
     "running": "Running",
     "stopped": "Stopped",
@@ -4304,9 +4304,43 @@
       "autoReviewUnavailable": "The selected model is no longer in the aggregation (the provider was removed or stopped publishing it), so approvals use the default reviewer for now. It comes back once you add it again.",
       "saveFailed": "Failed to save: {{error}}"
     },
+    "balance": {
+      "title": "Load balancing",
+      "stickyCount": "{{count}} sticky sessions",
+      "share": "{{value}}% base share",
+      "decrease": "Decrease weight",
+      "increase": "Increase weight",
+      "weightFor": "Weight for {{name}}",
+      "apply": "Apply",
+      "saving": "Applying…",
+      "saved": "Load-balancing policy saved",
+      "saveFailed": "Could not save the load-balancing policy",
+      "strategies": {
+        "priority": {
+          "label": "Priority",
+          "hint": "Keep the current order",
+          "description": "New sessions use the existing Default → #0 → #N order."
+        },
+        "roundRobin": {
+          "label": "Round robin",
+          "hint": "Rotate evenly",
+          "description": "New sessions rotate evenly across the providers available to this model."
+        },
+        "weightedRoundRobin": {
+          "label": "Weighted",
+          "hint": "Use provider weights",
+          "description": "New sessions rotate by provider weight, while existing sessions keep their provider."
+        },
+        "leastLoad": {
+          "label": "Least load",
+          "hint": "Live load and latency",
+          "description": "New sessions prefer the least busy provider; recent response time breaks ties."
+        }
+      }
+    },
     "fallback": {
-      "title": "Model fallback chain",
-      "description": "Fallbacks follow the Aggregation priority automatically, with an optional per-model override.",
+      "title": "Model pool and fallback order",
+      "description": "The chain defines both the balancing candidates and the order tried after a failure.",
       "count": "{{count}} fallback targets",
       "customCount": "Custom · {{count}} targets",
       "autoCount": "Automatic by Aggregation priority · tries {{first}} first · {{count}} targets",
@@ -4320,7 +4354,7 @@
       "customMode": "Custom",
       "defaultRank": "Default",
       "automaticTitle": "Automatic fallback order",
-      "automaticHint": "Requests follow Default → #0 → #N. Adding a custom target switches this model to the custom order.",
+      "automaticHint": "Balancing and fallback use Default → #0 → #N. A custom target replaces this pool and its order.",
       "customHint": "The automatic order is copied into this custom chain. Replace, reorder, or remove any target.",
       "noTargets": "No fallback targets are currently available.",
       "moveUp": "Move up",

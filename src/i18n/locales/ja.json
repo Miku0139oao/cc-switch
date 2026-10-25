@@ -4173,7 +4173,7 @@
     "quota": "主要クォータ",
     "directState": "直接接続",
     "routeQueue": "ルート先 · {{count}}",
-    "stackState": "{{members}} プロバイダー · {{fallbacks}} フォールバック",
+    "stackState": "{{strategy}} · {{members}} プロバイダー · {{fallbacks}} フォールバック",
     "service": "ローカルルーター",
     "running": "実行中",
     "stopped": "停止",
@@ -4304,9 +4304,43 @@
       "autoReviewUnavailable": "選択したモデルは集約に含まれなくなったため（プロバイダーの削除またはモデルの公開停止）、承認は一時的に既定のモデルを使います。再び追加すると自動で戻ります。",
       "saveFailed": "保存に失敗しました：{{error}}"
     },
+    "balance": {
+      "title": "負荷分散",
+      "stickyCount": "{{count}} 件の固定セッション",
+      "share": "基本比率 {{value}}%",
+      "decrease": "重みを下げる",
+      "increase": "重みを上げる",
+      "weightFor": "{{name}} の重み",
+      "apply": "適用",
+      "saving": "適用中…",
+      "saved": "負荷分散ポリシーを保存しました",
+      "saveFailed": "負荷分散ポリシーを保存できませんでした",
+      "strategies": {
+        "priority": {
+          "label": "優先順位",
+          "hint": "現在の順序を維持",
+          "description": "新しいセッションは「既定 → #0 → #N」の既存順序を使います。"
+        },
+        "roundRobin": {
+          "label": "ラウンドロビン",
+          "hint": "均等に切り替え",
+          "description": "新しいセッションを、このモデルで利用できるプロバイダーへ均等に割り当てます。"
+        },
+        "weightedRoundRobin": {
+          "label": "加重",
+          "hint": "プロバイダーの重み",
+          "description": "新しいセッションをプロバイダーの重みに従って割り当てます。既存セッションは維持されます。"
+        },
+        "leastLoad": {
+          "label": "最小負荷",
+          "hint": "現在の負荷と遅延",
+          "description": "新しいセッションは最も空いているプロバイダーを優先し、同負荷なら最近の応答時間で選びます。"
+        }
+      }
+    },
     "fallback": {
-      "title": "モデルフォールバックチェーン",
-      "description": "既定では集約の優先順位に従って自動的に切り替え、モデル単位で上書きもできます。",
+      "title": "モデル候補プールとフォールバック順",
+      "description": "このチェーンは負荷分散の候補と、失敗後に試す順序の両方を定義します。",
       "count": "{{count}} 件のフォールバック",
       "customCount": "カスタム · {{count}} 件",
       "autoCount": "集約の優先順位で自動 · 最初に {{first}} · {{count}} 件",
@@ -4320,7 +4354,7 @@
       "customMode": "カスタム",
       "defaultRank": "既定",
       "automaticTitle": "自動フォールバック順",
-      "automaticHint": "現在は「既定 → #0 → #N」の順です。カスタムターゲットを追加すると、このモデルはカスタム順に切り替わります。",
+      "automaticHint": "負荷分散とフォールバックは「既定 → #0 → #N」を使います。カスタムターゲットを追加すると、その候補プールと順序に切り替わります。",
       "customHint": "自動順をコピー済みです。置換、並べ替え、削除ができます。",
       "noTargets": "利用できるフォールバック先がありません。",
       "moveUp": "上へ",

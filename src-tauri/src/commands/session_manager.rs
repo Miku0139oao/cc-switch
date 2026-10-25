@@ -255,6 +255,9 @@ pub async fn delete_session(
     })
     .await
     .map_err(|e| format!("Failed to delete session: {e}"))??;
+    if deleted {
+        clear_balanced_session_for_deleted_source(&providerId, &sessionId);
+    }
     if deleted && providerId == "codex" {
         if let Err(error) =
             session_route::clear_route(&crate::live::engine::DeviceStore::for_device(), &sessionId)
@@ -263,6 +266,26 @@ pub async fn delete_session(
         }
     }
     Ok(deleted)
+}
+
+fn clear_balanced_session_for_deleted_source(provider_id: &str, session_id: &str) {
+    if !matches!(provider_id, "claude" | "codex" | "claude-desktop") {
+        return;
+    }
+    let session_id = if provider_id == "codex" {
+        session_id.strip_prefix("codex_").unwrap_or(session_id)
+    } else {
+        session_id
+    };
+    if let Err(error) = crate::mode::state::clear_balanced_sessions_for_session(
+        &crate::live::engine::DeviceStore::for_device(),
+        provider_id,
+        session_id,
+    ) {
+        log::warn!(
+            "Failed to clear balancing assignments for deleted {provider_id} session {session_id}: {error}"
+        );
+    }
 }
 
 #[tauri::command]
@@ -274,15 +297,15 @@ pub async fn delete_sessions(
             .await
             .map_err(|e| format!("Failed to delete sessions: {e}"))?;
     let store = crate::live::engine::DeviceStore::for_device();
-    for outcome in outcomes
-        .iter()
-        .filter(|item| item.success && item.provider_id == "codex")
-    {
-        if let Err(error) = session_route::clear_route(&store, &outcome.session_id) {
-            log::warn!(
-                "Failed to clear the deleted Codex session route {}: {error}",
-                outcome.session_id
-            );
+    for outcome in outcomes.iter().filter(|item| item.success) {
+        clear_balanced_session_for_deleted_source(&outcome.provider_id, &outcome.session_id);
+        if outcome.provider_id == "codex" {
+            if let Err(error) = session_route::clear_route(&store, &outcome.session_id) {
+                log::warn!(
+                    "Failed to clear the deleted Codex session route {}: {error}",
+                    outcome.session_id
+                );
+            }
         }
     }
     Ok(outcomes)

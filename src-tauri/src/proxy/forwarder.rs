@@ -14,7 +14,7 @@ use super::{
         carries_encrypted_agent_task, detect_opaque_state_rejection, rectify_opaque_state,
         unreadable_agent_task_error, OpaqueStateRejection,
     },
-    provider_router::ProviderRouter,
+    provider_router::{ProviderRouter, StackLoadGuard},
     providers::{
         codex_chat_history::CodexChatHistoryStore, gemini_shadow::GeminiShadowStore, get_adapter,
         AuthInfo, AuthStrategy, ProviderAdapter, ProviderType,
@@ -27,6 +27,7 @@ use super::{
     ProxyError,
 };
 use crate::commands::{CodexOAuthState, CopilotAuthState, XaiOAuthState};
+use crate::mode::stack::StackBalanceContext;
 use crate::proxy::providers::copilot_auth::{CopilotAuthError, CopilotAuthManager};
 use crate::proxy::providers::copilot_model_map::{
     CopilotProtocol, CopilotTransport, ResolvedCopilotModel,
@@ -295,6 +296,8 @@ pub struct ForwardResult {
     /// 活跃连接 RAII guard：随响应一起流转到 response_processor / handle_claude_transform，
     /// 最终被 move 进流式 body future（或非流式响应作用域），覆盖整个响应生命周期。
     pub(crate) connection_guard: Option<ActiveConnectionGuard>,
+    /// Per-provider balancing load guard with the same response lifetime.
+    pub(crate) stack_load_guard: Option<StackLoadGuard>,
 }
 
 pub struct ForwardError {
@@ -313,7 +316,8 @@ pub struct ForwardError {
 /// `active_connections` 计数过早归零。RAII guard 让"减量"由 Rust 类型系统驱动，
 /// 不需要每条出口路径都手动调用。
 pub(crate) struct ActiveConnectionGuard {
-    status: Arc<RwLock<ProxyStatus>>,
+    status: Option<Arc<RwLock<ProxyStatus>>>,
+    stack_load: Option<StackLoadGuard>,
 }
 
 impl ActiveConnectionGuard {
@@ -322,14 +326,19 @@ impl ActiveConnectionGuard {
             let mut s = status.write().await;
             s.active_connections = s.active_connections.saturating_add(1);
         }
-        Self { status }
+        Self {
+            status: Some(status),
+            stack_load: None,
+        }
     }
 }
 
 impl Drop for ActiveConnectionGuard {
     fn drop(&mut self) {
         // Drop 不能 await：把减量操作调度到 tokio runtime
-        let status = self.status.clone();
+        let Some(status) = self.status.clone() else {
+            return;
+        };
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 let mut s = status.write().await;
@@ -383,6 +392,8 @@ pub struct RequestForwarder {
     /// Upstream model override for each Stack attempt, aligned with the
     /// provider list. Empty for ordinary routed requests.
     stack_attempt_models: Vec<String>,
+    /// Automatic first attempt chosen for this aggregated-model session.
+    stack_balance: Option<StackBalanceContext>,
 }
 
 impl RequestForwarder {
@@ -502,6 +513,7 @@ impl RequestForwarder {
             failover_enabled: false,
             stack_request: false,
             stack_attempt_models: Vec::new(),
+            stack_balance: None,
         }
     }
 
@@ -518,6 +530,11 @@ impl RequestForwarder {
 
     pub fn stack_attempt_models(mut self, models: Vec<String>) -> Self {
         self.stack_attempt_models = models;
+        self
+    }
+
+    pub fn stack_balance(mut self, balance: Option<StackBalanceContext>) -> Self {
+        self.stack_balance = balance;
         self
     }
 
@@ -655,6 +672,23 @@ impl RequestForwarder {
         status.current_provider_id = Some(provider.id.clone());
     }
 
+    fn clear_balance_after_retryable_failure(
+        &self,
+        app_type: &AppType,
+        provider: &Provider,
+        attempt_index: usize,
+        stack_load_guard: &mut Option<StackLoadGuard>,
+    ) {
+        drop(stack_load_guard.take());
+        if let (Some(context), Some(model)) = (
+            self.stack_balance.as_ref(),
+            self.stack_attempt_models.get(attempt_index),
+        ) {
+            self.router
+                .clear_stack_balance_on_failure(app_type, context, &provider.id, model);
+        }
+    }
+
     /// 请求成功：记熔断器成功，更新「正在使用」和成功统计。实际用的不是请求开始时那家，
     /// 就计一次故障转移，并异步把当前供应商切过去（同步 UI/托盘）。
     async fn finish_success(
@@ -676,6 +710,7 @@ impl RequestForwarder {
             codex_upstream_format,
             outbound_model,
             connection_guard: None,
+            stack_load_guard: None,
         };
         if !self.routing_state_enabled() {
             if self.provider_health_enabled() {
@@ -809,31 +844,70 @@ impl RequestForwarder {
         extensions: Extensions,
         providers: Vec<Provider>,
     ) -> Result<ForwardResult, ForwardError> {
-        if !self.routing_state_enabled() {
-            return self
-                .forward_with_retry_inner(
-                    app_type, method, endpoint, body, headers, extensions, providers,
-                )
-                .await;
-        }
-        let guard = ActiveConnectionGuard::acquire(self.status.clone()).await;
-        {
-            let mut s = self.status.write().await;
-            s.total_requests = s.total_requests.saturating_add(1);
-            s.last_request_at = Some(chrono::Utc::now().to_rfc3339());
-        }
+        let connection_guard = if self.routing_state_enabled() {
+            let guard = ActiveConnectionGuard::acquire(self.status.clone()).await;
+            {
+                let mut s = self.status.write().await;
+                s.total_requests = s.total_requests.saturating_add(1);
+                s.last_request_at = Some(chrono::Utc::now().to_rfc3339());
+            }
+            Some(guard)
+        } else {
+            None
+        };
+        let stack_attempt_providers = providers
+            .iter()
+            .map(|provider| provider.id.clone())
+            .collect::<Vec<_>>();
         let result = self
             .forward_with_retry_inner(
                 app_type, method, endpoint, body, headers, extensions, providers,
             )
             .await;
-        // 把 guard 注入到 Ok 结果，让它随响应一起流转到 response_processor，
-        // 在流式 body 的 future 内才真正 drop。
-        // Err 路径：guard 在函数 scope 内随返回值落地时自动 drop。
-        result.map(|mut fr| {
-            fr.connection_guard = Some(guard);
-            fr
-        })
+        match result {
+            Ok(mut forwarded) => {
+                if let Some(context) = self.stack_balance.as_ref() {
+                    let model = forwarded
+                        .outbound_model
+                        .clone()
+                        .or_else(|| {
+                            self.stack_attempt_model(
+                                &stack_attempt_providers,
+                                &forwarded.provider.id,
+                            )
+                        })
+                        .unwrap_or_default();
+                    self.router.confirm_stack_balance_success(
+                        app_type,
+                        context,
+                        &forwarded.provider.id,
+                        &model,
+                    );
+                }
+                let stack_load = forwarded.stack_load_guard.take();
+                let mut lifecycle_guard = connection_guard;
+                if let Some(stack_load) = stack_load {
+                    if let Some(guard) = lifecycle_guard.as_mut() {
+                        guard.stack_load = Some(stack_load);
+                    } else {
+                        lifecycle_guard = Some(ActiveConnectionGuard {
+                            status: None,
+                            stack_load: Some(stack_load),
+                        });
+                    }
+                }
+                forwarded.connection_guard = lifecycle_guard;
+                Ok(forwarded)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn stack_attempt_model(&self, provider_ids: &[String], provider_id: &str) -> Option<String> {
+        self.stack_attempt_models
+            .iter()
+            .zip(provider_ids)
+            .find_map(|(model, id)| (id == provider_id).then(|| model.clone()))
     }
 
     /// 实际转发逻辑（不包含客户端维度的入口/出口计数）
@@ -937,6 +1011,10 @@ impl RequestForwarder {
             }
 
             attempted_providers += 1;
+            let mut stack_load_guard = self.stack_balance.as_ref().map(|context| {
+                self.router
+                    .begin_stack_load(app_type_str, &provider.id, Some(context))
+            });
 
             // 更新状态中的当前 Provider 信息（per-attempt 维度的标识）
             //
@@ -962,7 +1040,7 @@ impl RequestForwarder {
                 .await
             {
                 Ok(forwarded) => {
-                    return Ok(self
+                    let mut result = self
                         .finish_success(
                             provider,
                             app_type_str,
@@ -970,7 +1048,12 @@ impl RequestForwarder {
                             forwarded,
                             attempted_codex_upstream_format,
                         )
-                        .await);
+                        .await;
+                    if let Some(mut guard) = stack_load_guard.take() {
+                        guard.record_success();
+                        result.stack_load_guard = Some(guard);
+                    }
+                    return Ok(result);
                 }
                 Err(mut e) => {
                     // 检测是否需要触发整流器（仅 Claude/ClaudeAuth 供应商）
@@ -1025,7 +1108,7 @@ impl RequestForwarder {
                                     log::info!(
                                         "[{app_type_str}] [Media] Unsupported-image retry succeeded"
                                     );
-                                    return Ok(self
+                                    let mut result = self
                                         .finish_success(
                                             provider,
                                             app_type_str,
@@ -1033,7 +1116,12 @@ impl RequestForwarder {
                                             forwarded,
                                             media_retry_codex_upstream_format,
                                         )
-                                        .await);
+                                        .await;
+                                    if let Some(mut guard) = stack_load_guard.take() {
+                                        guard.record_success();
+                                        result.stack_load_guard = Some(guard);
+                                    }
+                                    return Ok(result);
                                 }
                                 Err(retry_err) => {
                                     log::warn!(
@@ -1054,6 +1142,12 @@ impl RequestForwarder {
                                     {
                                         return Err(err);
                                     }
+                                    self.clear_balance_after_retryable_failure(
+                                        app_type,
+                                        provider,
+                                        attempt_index,
+                                        &mut stack_load_guard,
+                                    );
                                     continue;
                                 }
                             }
@@ -1115,7 +1209,7 @@ impl RequestForwarder {
                             {
                                 Ok(forwarded) => {
                                     log::info!("[{app_type_str}] [RECT-021] 密文整流重试成功");
-                                    return Ok(self
+                                    let mut result = self
                                         .finish_success(
                                             provider,
                                             app_type_str,
@@ -1123,7 +1217,12 @@ impl RequestForwarder {
                                             forwarded,
                                             opaque_retry_codex_upstream_format,
                                         )
-                                        .await);
+                                        .await;
+                                    if let Some(mut guard) = stack_load_guard.take() {
+                                        guard.record_success();
+                                        result.stack_load_guard = Some(guard);
+                                    }
+                                    return Ok(result);
                                 }
                                 // 重试仍失败：按这次的错误走常规分类，和没整流过一样
                                 // 决定是否计入熔断、是否换下一家。
@@ -1221,7 +1320,7 @@ impl RequestForwarder {
                                 {
                                     Ok(forwarded) => {
                                         log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
-                                        return Ok(self
+                                        let mut result = self
                                             .finish_success(
                                                 provider,
                                                 app_type_str,
@@ -1229,7 +1328,12 @@ impl RequestForwarder {
                                                 forwarded,
                                                 signature_retry_codex_upstream_format,
                                             )
-                                            .await);
+                                            .await;
+                                        if let Some(mut guard) = stack_load_guard.take() {
+                                            guard.record_success();
+                                            result.stack_load_guard = Some(guard);
+                                        }
+                                        return Ok(result);
                                     }
                                     Err(retry_err) => {
                                         log::warn!(
@@ -1250,6 +1354,12 @@ impl RequestForwarder {
                                         {
                                             return Err(err);
                                         }
+                                        self.clear_balance_after_retryable_failure(
+                                            app_type,
+                                            provider,
+                                            attempt_index,
+                                            &mut stack_load_guard,
+                                        );
                                         continue;
                                     }
                                 }
@@ -1321,7 +1431,7 @@ impl RequestForwarder {
                             {
                                 Ok(forwarded) => {
                                     log::info!("[{app_type_str}] [RECT-011] budget 整流重试成功");
-                                    return Ok(self
+                                    let mut result = self
                                         .finish_success(
                                             provider,
                                             app_type_str,
@@ -1329,7 +1439,12 @@ impl RequestForwarder {
                                             forwarded,
                                             budget_retry_codex_upstream_format,
                                         )
-                                        .await);
+                                        .await;
+                                    if let Some(mut guard) = stack_load_guard.take() {
+                                        guard.record_success();
+                                        result.stack_load_guard = Some(guard);
+                                    }
+                                    return Ok(result);
                                 }
                                 Err(retry_err) => {
                                     log::warn!(
@@ -1350,6 +1465,12 @@ impl RequestForwarder {
                                     {
                                         return Err(err);
                                     }
+                                    self.clear_balance_after_retryable_failure(
+                                        app_type,
+                                        provider,
+                                        attempt_index,
+                                        &mut stack_load_guard,
+                                    );
                                     continue;
                                 }
                             }
@@ -1379,6 +1500,12 @@ impl RequestForwarder {
                     match category {
                         ErrorCategory::Retryable => {
                             // 可重试：真正的 provider 故障 → 记录失败并更新熔断器/DB 健康度
+                            self.clear_balance_after_retryable_failure(
+                                app_type,
+                                provider,
+                                attempt_index,
+                                &mut stack_load_guard,
+                            );
                             self.record_provider_failure(
                                 provider,
                                 app_type_str,
@@ -4941,6 +5068,7 @@ mod tests {
             failover_enabled: false,
             stack_request: false,
             stack_attempt_models: Vec::new(),
+            stack_balance: None,
         }
     }
 

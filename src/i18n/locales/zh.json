@@ -4173,7 +4173,7 @@
     "quota": "关键额度",
     "directState": "直接连接",
     "routeQueue": "路由目标 · {{count}} 个",
-    "stackState": "{{members}} 家 · {{fallbacks}} 段回退",
+    "stackState": "{{strategy}} · {{members}} 家 · {{fallbacks}} 段回退",
     "service": "本地路由",
     "running": "运行中",
     "stopped": "已停止",
@@ -4304,9 +4304,43 @@
       "autoReviewUnavailable": "所选模型已不在聚合名单里（成员被移除或模型不再发布），审批暂时用默认模型；加回来后自动恢复。",
       "saveFailed": "保存失败：{{error}}"
     },
+    "balance": {
+      "title": "负载均衡",
+      "stickyCount": "{{count}} 个粘性会话",
+      "share": "基础占比 {{value}}%",
+      "decrease": "降低权重",
+      "increase": "提高权重",
+      "weightFor": "{{name}} 的权重",
+      "apply": "应用",
+      "saving": "应用中…",
+      "saved": "负载均衡策略已保存",
+      "saveFailed": "保存负载均衡策略失败",
+      "strategies": {
+        "priority": {
+          "label": "优先级",
+          "hint": "保持当前顺序",
+          "description": "新会话沿用当前的「默认 → #0 → #N」顺序。"
+        },
+        "roundRobin": {
+          "label": "轮询",
+          "hint": "平均轮换",
+          "description": "新会话在这个模型可用的供应商之间平均轮换。"
+        },
+        "weightedRoundRobin": {
+          "label": "加权轮询",
+          "hint": "按供应商权重",
+          "description": "新会话按供应商权重分配，已有会话保持原供应商。"
+        },
+        "leastLoad": {
+          "label": "最低负载",
+          "hint": "实时负载与延迟",
+          "description": "新会话优先选择当前最空闲的供应商；负载相同时比较近期响应时间。"
+        }
+      }
+    },
     "fallback": {
-      "title": "模型回退链",
-      "description": "默认按聚合优先级自动接续；也可以为单个模型覆盖回退顺序。",
+      "title": "模型候选池与回退顺序",
+      "description": "这条链同时决定负载均衡候选，以及失败后依序尝试的供应商与模型。",
       "count": "{{count}} 段回退",
       "customCount": "自定义 · {{count}} 段回退",
       "autoCount": "自动按聚合优先级 · 先试 {{first}} · {{count}} 段回退",
@@ -4320,7 +4354,7 @@
       "customMode": "自定义",
       "defaultRank": "默认",
       "automaticTitle": "自动回退顺序",
-      "automaticHint": "当前按「默认 → #0 → #N」接续。加入自定义目标后，会改用自定义顺序。",
+      "automaticHint": "负载均衡与回退当前使用「默认 → #0 → #N」。加入自定义目标后会改用自定义候选池与顺序。",
       "customHint": "自定义模式已带入自动顺序。你可以替换、排序或移除任何目标。",
       "noTargets": "当前没有可用的回退目标。",
       "moveUp": "上移",

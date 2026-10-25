@@ -218,7 +218,7 @@ fn resolve_stack_target(
 /// Resolve a request-level target. A per-Codex-session pin takes precedence
 /// over the model id and global route; all other clients keep the existing
 /// Stack decoding path.
-fn resolve_request_target(
+async fn resolve_request_target(
     state: &ProxyState,
     app_type: &AppType,
     headers: &axum::http::HeaderMap,
@@ -243,7 +243,23 @@ fn resolve_request_target(
             return Ok(Some(target));
         }
     }
-    resolve_stack_target(state, app_type, body)
+    let Some(mut target) = resolve_stack_target(state, app_type, body)? else {
+        return Ok(None);
+    };
+    let session = crate::proxy::extract_session_id(headers, body, app_type.as_str());
+    target = state
+        .provider_router
+        .balance_stack_target(
+            &crate::live::engine::DeviceStore::for_device(),
+            app_type,
+            &session,
+            state.usage_cache.as_ref(),
+            target,
+        )
+        .await
+        .map_err(|error| Box::new(ProxyError::DatabaseError(error.to_string()).into_response()))?;
+    body["model"] = Value::String(target.upstream_model.clone());
+    Ok(Some(target))
 }
 
 /// Stack 模型解不出来时的错误体：Claude Code、Claude Desktop 用 Anthropic 的错误信封，Codex 用
@@ -356,7 +372,7 @@ async fn handle_messages_for_app(
         .to_bytes();
     let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
-    let stack = match resolve_request_target(&state, &app_type, &headers, &mut body) {
+    let stack = match resolve_request_target(&state, &app_type, &headers, &mut body).await {
         Ok(stack) => stack,
         Err(rejected) => return Ok(*rejected),
     };
@@ -962,7 +978,7 @@ pub async fn handle_chat_completions(
     let body_bytes = decode_codex_request_body(&mut headers, body_bytes)?;
     let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
-    let stack = match resolve_request_target(&state, &AppType::Codex, &headers, &mut body) {
+    let stack = match resolve_request_target(&state, &AppType::Codex, &headers, &mut body).await {
         Ok(stack) => stack,
         Err(rejected) => return Ok(*rejected),
     };
@@ -1081,7 +1097,7 @@ async fn handle_responses_for_app(
     let body_bytes = decode_codex_request_body(&mut headers, body_bytes)?;
     let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
-    let stack = match resolve_request_target(&state, &app_type, &headers, &mut body) {
+    let stack = match resolve_request_target(&state, &app_type, &headers, &mut body).await {
         Ok(stack) => stack,
         Err(rejected) => return Ok(*rejected),
     };
@@ -1414,7 +1430,7 @@ async fn handle_responses_compact_for_app(
     let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
     // 压缩请求也带着客户端选中的模型：不解码的话，会带着前缀落到默认路由。
-    let stack = match resolve_request_target(&state, &app_type, &headers, &mut body) {
+    let stack = match resolve_request_target(&state, &app_type, &headers, &mut body).await {
         Ok(stack) => stack,
         Err(rejected) => return Ok(*rejected),
     };
@@ -4166,6 +4182,8 @@ mod stack_tests {
                 upstream_model: "gemini-3.8-flash-high".into(),
                 original_model: model.into(),
                 fallbacks: Vec::new(),
+                balance_policy: crate::mode::state::StackState::default(),
+                balance: None,
             }),
         )
         .await
@@ -4307,6 +4325,8 @@ mod stack_tests {
             upstream_model: "kimi-k3".to_string(),
             original_model: "ccs-claude-kimi--kimi-k3".to_string(),
             fallbacks: Vec::new(),
+            balance_policy: crate::mode::state::StackState::default(),
+            balance: None,
         };
         let body = json!({ "model": "kimi-k3", "messages": [] });
 

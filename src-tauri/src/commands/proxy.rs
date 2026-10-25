@@ -232,6 +232,19 @@ pub async fn set_stack_fallback_chain(
     crate::mode::controller::set_stack_fallback_chain(state.inner(), &app, &model_id, targets).await
 }
 
+/// Set the App-level aggregation balancing policy. State-only and effective on
+/// the next request; no client config rewrite or restart is involved.
+#[tauri::command]
+pub async fn set_stack_balance_policy(
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+    strategy: crate::mode::state::BalanceStrategy,
+    weights: std::collections::BTreeMap<String, u32>,
+) -> Result<(), String> {
+    let app = require_mode_app(&app_type)?;
+    crate::mode::controller::set_stack_balance_policy(state.inner(), &app, strategy, weights).await
+}
+
 /// Codex 聚合的模型被别的模型目录挡住时，改用 CC Switch 生成的目录（去掉指向别的文件的
 /// `model_catalog_json`）。返回之后还剩的提示。
 #[tauri::command]

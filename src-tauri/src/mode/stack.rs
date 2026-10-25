@@ -639,12 +639,28 @@ pub struct StackTarget {
     pub original_model: String,
     /// Resolved fallback attempts in their effective order.
     pub fallbacks: Vec<ResolvedFallback>,
+    /// Policy snapshot used for this request; avoids a second live-state read.
+    pub balance_policy: StackState,
+    /// Present only when automatic balancing chose the first attempt for a
+    /// client-provided session. Used to confirm or invalidate the assignment.
+    pub balance: Option<StackBalanceContext>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ResolvedFallback {
     pub provider: Provider,
     pub upstream_model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackBalanceContext {
+    pub session_id: String,
+    pub logical_model: String,
+    pub selected_provider_id: String,
+    pub selected_upstream_model: String,
+    pub client_provided: bool,
+    pub reason: &'static str,
+    pub candidate_count: usize,
 }
 
 /// 带保留前缀的 id 为什么解不出来。
@@ -748,14 +764,45 @@ pub fn resolve_with_quota(
     let route = state::mode_state(store, app.as_str())?.proxy_route;
     let members = members(db, app, &stack, route.as_deref())?;
     let fallbacks = resolve_fallbacks(app, &stack, model, &provider.id, &upstream_model, &members);
-    let (provider, upstream_model, fallbacks) =
-        prefer_available_attempts(app, quota_cache, provider, upstream_model, fallbacks);
+    let (provider, upstream_model, fallbacks) = prioritize_attempts_if_needed(
+        app,
+        stack.balance_strategy,
+        quota_cache,
+        provider,
+        upstream_model,
+        fallbacks,
+    );
+    let (upstream_model, fallbacks) =
+        enforce_failover_boundary(app, provider.clone(), upstream_model, fallbacks);
     Ok(Resolved::Hit(Box::new(StackTarget {
         provider,
         upstream_model,
         original_model: model.to_string(),
         fallbacks,
+        balance_policy: stack,
+        balance: None,
     })))
+}
+
+fn enforce_failover_boundary(
+    app: &AppType,
+    provider: Provider,
+    upstream_model: String,
+    fallbacks: Vec<ResolvedFallback>,
+) -> (String, Vec<ResolvedFallback>) {
+    if !crate::proxy::provider_router::provider_supports_failover(app.as_str(), &provider) {
+        return (upstream_model, Vec::new());
+    }
+    let fallbacks = fallbacks
+        .into_iter()
+        .filter(|fallback| {
+            crate::proxy::provider_router::provider_supports_failover(
+                app.as_str(),
+                &fallback.provider,
+            )
+        })
+        .collect();
+    (upstream_model, fallbacks)
 }
 
 fn resolve_fallbacks(
@@ -810,6 +857,22 @@ pub(crate) fn fallback_targets(
     let mut seen = std::collections::HashSet::new();
     let mut explicit = Vec::new();
     for target in stack.fallbacks.get(published_model).into_iter().flatten() {
+        let member = members
+            .iter()
+            .find(|member| member.provider.id == target.provider_id);
+        if let Some(member) = member {
+            if !crate::proxy::provider_router::provider_supports_failover(
+                app.as_str(),
+                &member.provider,
+            ) {
+                continue;
+            }
+            if !member_upstream_models(app, member).iter().any(|model| {
+                normalize_upstream_model(model) == normalize_upstream_model(&target.upstream_model)
+            }) {
+                continue;
+            }
+        }
         if !active.contains(target.provider_id.as_str())
             || !seen.insert((target.provider_id.clone(), target.upstream_model.clone()))
         {
@@ -831,6 +894,12 @@ pub(crate) fn fallback_targets(
         .chain(members.iter().filter(|member| !member.route));
     for member in ordered {
         if member.provider.id == primary_provider_id {
+            continue;
+        }
+        if !crate::proxy::provider_router::provider_supports_failover(
+            app.as_str(),
+            &member.provider,
+        ) {
             continue;
         }
         let Some(upstream_model) = matching_upstream_model(app, member, primary_upstream_model)
@@ -956,18 +1025,23 @@ fn resolve_desktop(
                 &found.upstream,
                 &members,
             );
-            let (provider, upstream_model, fallbacks) = prefer_available_attempts(
+            let (provider, upstream_model, fallbacks) = prioritize_attempts_if_needed(
                 app,
+                stack.balance_strategy,
                 quota_cache,
                 member.provider.clone(),
                 found.upstream,
                 fallbacks,
             );
+            let (upstream_model, fallbacks) =
+                enforce_failover_boundary(app, provider.clone(), upstream_model, fallbacks);
             return Ok(Resolved::Hit(Box::new(StackTarget {
                 provider,
                 upstream_model,
                 original_model: model.to_string(),
                 fallbacks,
+                balance_policy: stack,
+                balance: None,
             })));
         }
     }
@@ -985,6 +1059,21 @@ fn resolve_desktop(
         }
     }
     Ok(Resolved::Miss(StackMiss::Unknown))
+}
+
+fn prioritize_attempts_if_needed(
+    app: &AppType,
+    strategy: state::BalanceStrategy,
+    quota_cache: Option<&UsageCache>,
+    provider: Provider,
+    upstream_model: String,
+    fallbacks: Vec<ResolvedFallback>,
+) -> (Provider, String, Vec<ResolvedFallback>) {
+    if strategy == state::BalanceStrategy::Priority {
+        prefer_available_attempts(app, quota_cache, provider, upstream_model, fallbacks)
+    } else {
+        (provider, upstream_model, fallbacks)
+    }
 }
 
 /// 给前端：名单里的一家。
@@ -1064,6 +1153,11 @@ pub struct StackView {
     /// automatic Stack priority order.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub effective_fallbacks: std::collections::BTreeMap<String, Vec<state::StackFallbackTarget>>,
+    pub balance_strategy: state::BalanceStrategy,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub balance_weights: std::collections::BTreeMap<String, u32>,
+    #[serde(default)]
+    pub balanced_session_count: usize,
 }
 
 pub fn member_views(app: &AppType, members: &[Member]) -> Vec<StackMemberView> {
@@ -2146,6 +2240,30 @@ mod tests {
             assert_eq!(published.len(), 1);
             assert_eq!(published[0].label, "relay-1944 / kimi-k3");
             assert_eq!(hit(resolve_in(&fx, app, &id)).0, "relay-1944");
+        }
+
+        #[test]
+        fn codex_official_never_gets_cross_provider_fallbacks() {
+            let mut official = Provider::with_id(
+                "official".to_string(),
+                "Official".to_string(),
+                json!({"auth": {}, "config": ""}),
+                None,
+            );
+            official.category = Some("official".to_string());
+            let fallback = ResolvedFallback {
+                provider: provider("third-party", "Third party", None, json!({})),
+                upstream_model: "gpt-5".to_string(),
+            };
+
+            let (_, fallbacks) = enforce_failover_boundary(
+                &AppType::Codex,
+                official,
+                "gpt-5".to_string(),
+                vec![fallback],
+            );
+
+            assert!(fallbacks.is_empty());
         }
     }
 }

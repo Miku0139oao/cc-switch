@@ -4166,7 +4166,7 @@
     "quota": "Temel kota",
     "directState": "Doğrudan bağlantı",
     "routeQueue": "Rota hedefi · {{count}}",
-    "stackState": "{{members}} sağlayıcı · {{fallbacks}} yedek",
+    "stackState": "{{strategy}} · {{members}} sağlayıcı · {{fallbacks}} yedek",
     "service": "Yerel yönlendirici",
     "running": "Çalışıyor",
     "stopped": "Durdu",
@@ -4294,9 +4294,43 @@
       "autoReviewUnavailable": "Seçilen model artık birleştirmede bulunmuyor (sağlayıcı kaldırıldı veya modeli yayımlamayı durdurdu); bu nedenle onaylarda şimdilik varsayılan inceleyici kullanılıyor. Modeli yeniden eklediğinizde tekrar kullanılabilir.",
       "saveFailed": "Kaydetme başarısız: {{error}}"
     },
+    "balance": {
+      "title": "Yük dengeleme",
+      "stickyCount": "{{count}} sabit oturum",
+      "share": "Temel pay %{{value}}",
+      "decrease": "Ağırlığı azalt",
+      "increase": "Ağırlığı artır",
+      "weightFor": "{{name}} ağırlığı",
+      "apply": "Uygula",
+      "saving": "Uygulanıyor…",
+      "saved": "Yük dengeleme ilkesi kaydedildi",
+      "saveFailed": "Yük dengeleme ilkesi kaydedilemedi",
+      "strategies": {
+        "priority": {
+          "label": "Öncelik",
+          "hint": "Mevcut sırayı koru",
+          "description": "Yeni oturumlar mevcut Varsayılan → #0 → #N sırasını kullanır."
+        },
+        "roundRobin": {
+          "label": "Sıralı dağıtım",
+          "hint": "Eşit olarak döndür",
+          "description": "Yeni oturumlar bu model için kullanılabilir sağlayıcılar arasında eşit olarak döner."
+        },
+        "weightedRoundRobin": {
+          "label": "Ağırlıklı",
+          "hint": "Sağlayıcı ağırlıkları",
+          "description": "Yeni oturumlar sağlayıcı ağırlığına göre dağıtılır; mevcut oturumlar aynı sağlayıcıda kalır."
+        },
+        "leastLoad": {
+          "label": "En düşük yük",
+          "hint": "Canlı yük ve gecikme",
+          "description": "Yeni oturumlar en az meşgul sağlayıcıyı seçer; eşit yükte son yanıt süresi belirleyicidir."
+        }
+      }
+    },
     "fallback": {
-      "title": "Model yedek zinciri",
-      "description": "Yedekler varsayılan olarak Birleştirme önceliğini izler; model başına özel sıra da tanımlanabilir.",
+      "title": "Model havuzu ve yedek sırası",
+      "description": "Bu zincir hem yük dengeleme adaylarını hem de hata sonrası deneme sırasını belirler.",
       "count": "{{count}} yedek hedef",
       "customCount": "Özel · {{count}} hedef",
       "autoCount": "Birleştirme önceliğiyle otomatik · önce {{first}} · {{count}} hedef",
@@ -4310,7 +4344,7 @@
       "customMode": "Özel",
       "defaultRank": "Varsayılan",
       "automaticTitle": "Otomatik yedek sırası",
-      "automaticHint": "İstekler Varsayılan → #0 → #N sırasını izler. Özel bir hedef eklendiğinde bu model özel sırayı kullanır.",
+      "automaticHint": "Yük dengeleme ve yedekleme Varsayılan → #0 → #N sırasını kullanır. Özel hedef eklendiğinde bu havuz ve sıra kullanılır.",
       "customHint": "Otomatik sıra bu zincire kopyalandı. Hedefleri değiştirebilir, sıralayabilir veya kaldırabilirsiniz.",
       "noTargets": "Şu anda kullanılabilir yedek hedef yok.",
       "moveUp": "Yukarı taşı",

@@ -9,6 +9,7 @@ import type {
   ProxyStackWriteError,
   ProxyTakeoverStatus,
   StackFallbackTarget,
+  BalanceStrategy,
 } from "@/types/proxy";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { getAppLabel } from "@/config/appConfig";
@@ -222,6 +223,34 @@ export function useSetStackFallbackChain() {
     },
     onError: (error: unknown) => {
       toast.error(t("mode.fallback.saveFailed"), {
+        description: extractErrorMessage(error),
+      });
+    },
+  });
+}
+
+export function useSetStackBalancePolicy() {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: ({
+      appType,
+      strategy,
+      weights,
+    }: {
+      appType: string;
+      strategy: BalanceStrategy;
+      weights: Record<string, number>;
+    }) => proxyApi.setStackBalancePolicy(appType, strategy, weights),
+    onSuccess: (_data, variables) => {
+      toast.success(t("mode.balance.saved"), { closeButton: true });
+      queryClient.invalidateQueries({
+        queryKey: ["providers", variables.appType],
+      });
+    },
+    onError: (error: unknown) => {
+      toast.error(t("mode.balance.saveFailed"), {
         description: extractErrorMessage(error),
       });
     },

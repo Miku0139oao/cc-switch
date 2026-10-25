@@ -4174,7 +4174,7 @@
     "quota": "關鍵額度",
     "directState": "直接連線",
     "routeQueue": "路由目標 · {{count}} 個",
-    "stackState": "{{members}} 家 · {{fallbacks}} 段備援",
+    "stackState": "{{strategy}} · {{members}} 家 · {{fallbacks}} 段備援",
     "service": "本機路由",
     "running": "執行中",
     "stopped": "已停止",
@@ -4305,9 +4305,43 @@
       "autoReviewUnavailable": "所選模型已不在聚合名單裡（成員被移除或模型不再發布），審批暫時使用預設模型；加回來後自動恢復。",
       "saveFailed": "儲存失敗：{{error}}"
     },
+    "balance": {
+      "title": "負載平衡",
+      "stickyCount": "{{count}} 個黏著工作階段",
+      "share": "基礎占比 {{value}}%",
+      "decrease": "降低權重",
+      "increase": "提高權重",
+      "weightFor": "{{name}} 的權重",
+      "apply": "套用",
+      "saving": "套用中…",
+      "saved": "負載平衡策略已儲存",
+      "saveFailed": "儲存負載平衡策略失敗",
+      "strategies": {
+        "priority": {
+          "label": "優先順序",
+          "hint": "維持目前順序",
+          "description": "新工作階段沿用目前的「預設 → #0 → #N」順序。"
+        },
+        "roundRobin": {
+          "label": "輪詢",
+          "hint": "平均輪替",
+          "description": "新工作階段會在這個模型可用的供應商之間平均輪替。"
+        },
+        "weightedRoundRobin": {
+          "label": "加權輪詢",
+          "hint": "依供應商權重",
+          "description": "新工作階段依供應商權重分配，既有工作階段維持原本供應商。"
+        },
+        "leastLoad": {
+          "label": "最低負載",
+          "hint": "即時負載與延遲",
+          "description": "新工作階段優先選擇目前最閒的供應商；負載相同時比較近期回應時間。"
+        }
+      }
+    },
     "fallback": {
-      "title": "模型備援鏈",
-      "description": "預設依聚合優先級自動接續；也可以為個別模型覆寫備援順序。",
+      "title": "模型候選池與備援順序",
+      "description": "這條鏈同時決定平衡候選，以及失敗後依序嘗試的供應商與模型。",
       "count": "{{count}} 段備援",
       "customCount": "自訂 · {{count}} 段備援",
       "autoCount": "自動依聚合優先級 · 先試 {{first}} · {{count}} 段備援",
@@ -4321,7 +4355,7 @@
       "customMode": "自訂",
       "defaultRank": "預設",
       "automaticTitle": "自動備援順序",
-      "automaticHint": "目前依「預設 → #0 → #N」接續。加入自訂目標後，會改為使用自訂順序。",
+      "automaticHint": "平衡與備援目前使用「預設 → #0 → #N」。加入自訂目標後，會改用自訂候選池與順序。",
       "customHint": "自訂模式已帶入自動順序。你可以替換、排序或移除任何目標。",
       "noTargets": "目前沒有可用的備援目標。",
       "moveUp": "上移",

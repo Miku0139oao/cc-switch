@@ -132,6 +132,12 @@ export interface StackFallbackTarget {
 
 export type ProxyStackFallbacks = Record<string, StackFallbackTarget[]>;
 
+export type BalanceStrategy =
+  | "priority"
+  | "roundRobin"
+  | "weightedRoundRobin"
+  | "leastLoad";
+
 /**
  * Codex Stack 模型客户端看不到或看不全：`routeOwnsCatalog` 路由供应商使用自己的模型目录文件，
  * Stack 模型不发布；官方做路由时官方模型列表暂未取到：`officialModelsBundled` 暂用 Codex
@@ -202,6 +208,12 @@ export interface ProxyStack {
   fallbacks?: ProxyStackFallbacks;
   /** Effective chains: an explicit override, or the automatic Stack priority order. */
   effectiveFallbacks?: ProxyStackFallbacks;
+  /** First-attempt policy for new aggregated-model sessions. */
+  balanceStrategy: BalanceStrategy;
+  /** Effective provider-level weight; missing providers use 1. */
+  balanceWeights: Record<string, number>;
+  /** Number of valid persisted session/model assignments. */
+  balancedSessionCount: number;
 }
 
 /** 重启 Codex 守护进程的结果：`notRunning` 表示它没在运行，什么都没做。 */

@@ -12,6 +12,7 @@ import type {
   AppModeView,
   StartupAttachFailure,
   StackFallbackTarget,
+  BalanceStrategy,
   AppCapabilities,
   DashboardSnapshot,
 } from "@/types/proxy";
@@ -134,6 +135,18 @@ export const proxyApi = {
       appType,
       modelId,
       targets,
+    });
+  },
+
+  async setStackBalancePolicy(
+    appType: string,
+    strategy: BalanceStrategy,
+    weights: Record<string, number>,
+  ): Promise<void> {
+    return invoke("set_stack_balance_policy", {
+      appType,
+      strategy,
+      weights,
     });
   },
 

@@ -57,6 +57,7 @@ import { RouteSettingsSheet } from "./RouteSettingsSheet";
 import { StackSettingsSheet } from "./StackSettingsSheet";
 import { useDesktopConfigMessages } from "./useDesktopConfigMessages";
 import { StackFallbackEditor } from "./StackFallbackEditor";
+import { StackLoadBalancePanel } from "./StackLoadBalancePanel";
 
 type ListCallbacks = Pick<
   React.ComponentProps<typeof ProviderList>,
@@ -636,7 +637,18 @@ export function SwitchModePanel({
           </div>
         )}
         {view === "stack" && isStackAppId(app) && (
-          <StackFallbackEditor app={app} stack={stack} providers={providers} />
+          <>
+            <StackLoadBalancePanel
+              app={app}
+              stack={stack}
+              providers={providers}
+            />
+            <StackFallbackEditor
+              app={app}
+              stack={stack}
+              providers={providers}
+            />
+          </>
         )}
         <ProviderList
           {...listCallbacks}

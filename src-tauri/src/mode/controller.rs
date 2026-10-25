@@ -42,6 +42,7 @@ use super::contract;
 use super::current::{self, Purpose};
 use super::operation;
 use super::stack::{self, StackModel, StackView};
+use super::state as live_state;
 use super::state::{op, Contract, Mode, ModeState, PendingTarget, StackState};
 
 /// 有路由模式的应用（[`AppType::has_route_mode`]）。Claude Desktop 也在内：它经同一个路由
@@ -1392,12 +1393,13 @@ async fn set_stack_member_locked(
         }
         next.members.retain(|id| id != provider_id);
         next.prune_fallbacks();
+        next.balance_weights.remove(provider_id);
     }
     if next == current {
         return Ok(());
     }
 
-    match attached_route(state, app)? {
+    let result = match attached_route(state, app)? {
         Some((mode, route)) => {
             let live_now = LiveNow::of(state, app, &mode)?;
             write_proxy(state, app, op::STACK, &route, &live_now, mode, Some(next))
@@ -1412,7 +1414,20 @@ async fn set_stack_member_locked(
                 ..PendingTarget::default()
             },
         ),
+    };
+    if result.is_ok() && !enabled {
+        if let Err(error) = live_state::clear_balanced_sessions_for_provider(
+            &DeviceStore::for_device(),
+            app.as_str(),
+            provider_id,
+        ) {
+            log::warn!(
+                "[{}] failed to prune balancing sessions for removed provider {provider_id}: {error}",
+                app.as_str()
+            );
+        }
     }
+    result
 }
 
 /// Stack 模式的状态、名单里的每一家和它发布的模型 id（给前端）。
@@ -1447,6 +1462,10 @@ pub fn stack_views(state: &AppState, app: &AppType) -> Result<StackView, String>
     });
     let member_views = stack::member_views(app, &members);
     let mut effective_fallbacks = std::collections::BTreeMap::new();
+    let mut balance_pools: std::collections::BTreeMap<
+        String,
+        std::collections::HashSet<(String, String)>,
+    > = std::collections::BTreeMap::new();
     for member in &member_views {
         for model_id in &member.model_ids {
             let Some(model) = member
@@ -1464,11 +1483,28 @@ pub fn stack_views(state: &AppState, app: &AppType) -> Result<StackView, String>
                 &model.upstream_model,
                 &members,
             );
+            let pool = balance_pools.entry(model_id.clone()).or_default();
+            pool.insert((
+                normalize_balance_model(&member.provider_id),
+                normalize_balance_model(&model.upstream_model),
+            ));
+            pool.extend(targets.iter().map(|target| {
+                (
+                    normalize_balance_model(&target.provider_id),
+                    normalize_balance_model(&target.upstream_model),
+                )
+            }));
             if !targets.is_empty() {
                 effective_fallbacks.insert(model_id.clone(), targets);
             }
         }
     }
+    let balanced_session_count = prune_invalid_balanced_sessions(app, &balance_pools);
+    let balance_weights = stack
+        .members
+        .iter()
+        .map(|provider_id| (provider_id.clone(), stack.weight_for(provider_id)))
+        .collect();
     Ok(StackView {
         active: mode.is_proxy() && stack.enabled,
         members: member_views,
@@ -1479,7 +1515,59 @@ pub fn stack_views(state: &AppState, app: &AppType) -> Result<StackView, String>
         subagent_models,
         fallbacks,
         effective_fallbacks,
+        balance_strategy: stack.balance_strategy,
+        balance_weights,
+        balanced_session_count,
     })
+}
+
+fn normalize_balance_model(model: &str) -> String {
+    crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(model)
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn prune_invalid_balanced_sessions(
+    app: &AppType,
+    pools: &std::collections::BTreeMap<String, std::collections::HashSet<(String, String)>>,
+) -> usize {
+    let store = DeviceStore::for_device();
+    let sessions = live_state::balanced_sessions(&store, app.as_str()).unwrap_or_default();
+    let mut valid = 0usize;
+    let mut changed = false;
+    for models in sessions.values() {
+        for (logical_model, target) in models {
+            let present = pools.get(logical_model).is_some_and(|pool| {
+                pool.contains(&(
+                    normalize_balance_model(&target.provider_id),
+                    normalize_balance_model(&target.upstream_model),
+                ))
+            });
+            if present {
+                valid += 1;
+            } else {
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        let _ = live_state::update_if_changed(&store, |live| {
+            if let Some(app_state) = live.apps.get_mut(app.as_str()) {
+                app_state.balanced_sessions.retain(|_, models| {
+                    models.retain(|logical_model, target| {
+                        pools.get(logical_model).is_some_and(|pool| {
+                            pool.contains(&(
+                                normalize_balance_model(&target.provider_id),
+                                normalize_balance_model(&target.upstream_model),
+                            ))
+                        })
+                    });
+                    !models.is_empty()
+                });
+            }
+        });
+    }
+    valid
 }
 
 /// Replace one aggregated model's explicit fallback chain. These chains are
@@ -1556,6 +1644,51 @@ pub async fn set_stack_fallback_chain(
             },
         ),
     }
+}
+
+/// Change the App-level first-attempt policy without rewriting client config.
+pub async fn set_stack_balance_policy(
+    state: &AppState,
+    app: &AppType,
+    strategy: crate::mode::state::BalanceStrategy,
+    weights: std::collections::BTreeMap<String, u32>,
+) -> Result<(), String> {
+    if !stack::supports_stack(app) {
+        return Err(format!("{} 不支持聚合模式", app.as_str()));
+    }
+    let _guard = lock_settled(state, app).await.map_err(err)?;
+    let current = settled_stack(app)?;
+    for provider_id in weights.keys() {
+        if !current.is_member(provider_id) {
+            return Err(format!("平衡权重的供应商不在聚合名单中: {provider_id}"));
+        }
+    }
+    for (provider_id, weight) in &weights {
+        if !(crate::mode::state::MIN_BALANCE_WEIGHT..=crate::mode::state::MAX_BALANCE_WEIGHT)
+            .contains(weight)
+        {
+            return Err(format!(
+                "供应商 {provider_id} 的权重必须在 {} 到 {} 之间",
+                crate::mode::state::MIN_BALANCE_WEIGHT,
+                crate::mode::state::MAX_BALANCE_WEIGHT
+            ));
+        }
+    }
+    let mut next = current.clone();
+    next.balance_strategy = strategy;
+    next.balance_weights = weights;
+    if next != current {
+        commit_state(
+            state,
+            app,
+            &PendingTarget {
+                stack: Some(next),
+                ..PendingTarget::default()
+            },
+        )?;
+    }
+    stack_views(state, app)?;
+    Ok(())
 }
 
 /// [`stack_views`] 再加上 Codex 客户端是否可能缓存旧登录或模型列表（要读进程表，放到阻塞线程
@@ -2725,6 +2858,47 @@ mod mode_tests {
             }
             let _ = crate::settings::reload_settings();
         }
+    }
+
+    #[test]
+    #[serial]
+    fn balance_pruning_keeps_only_assignments_in_the_current_model_pool() {
+        let _home = Home::new();
+        let store = DeviceStore::for_device();
+        live_state::update(&store, |live| {
+            let sessions = &mut live
+                .apps
+                .entry("claude".into())
+                .or_default()
+                .balanced_sessions;
+            sessions.entry("thread-1".into()).or_default().extend([
+                (
+                    "model-live".into(),
+                    live_state::BalancedSession {
+                        provider_id: "a".into(),
+                        upstream_model: "model-a".into(),
+                    },
+                ),
+                (
+                    "model-removed".into(),
+                    live_state::BalancedSession {
+                        provider_id: "gone".into(),
+                        upstream_model: "old-model".into(),
+                    },
+                ),
+            ]);
+        })
+        .unwrap();
+        let mut pools = std::collections::BTreeMap::new();
+        pools.insert(
+            "model-live".to_string(),
+            std::collections::HashSet::from([("a".to_string(), "model-a".to_string())]),
+        );
+
+        assert_eq!(prune_invalid_balanced_sessions(&AppType::Claude, &pools), 1);
+        let sessions = live_state::balanced_sessions(&store, "claude").unwrap();
+        assert!(sessions["thread-1"].contains_key("model-live"));
+        assert!(!sessions["thread-1"].contains_key("model-removed"));
     }
 
     fn claude(id: &str, url: &str, extra: Value) -> Provider {

@@ -1760,6 +1760,7 @@ pub fn run() {
             commands::set_proxy_stack_member,
             commands::reorder_stack_members,
             commands::set_stack_fallback_chain,
+            commands::set_stack_balance_policy,
             commands::adopt_codex_stack_catalog,
             commands::restart_codex_app_server_daemon,
             commands::acknowledge_codex_stale_clients,

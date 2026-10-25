@@ -334,6 +334,9 @@ export function DashboardPage({
                       ? t("dashboard.stackState", {
                           members: stack?.members.length ?? 0,
                           fallbacks: fallbackCount,
+                          strategy: t(
+                            `mode.balance.strategies.${stack?.balanceStrategy ?? "priority"}.label`,
+                          ),
                         })
                       : t("dashboard.directState");
                 return (

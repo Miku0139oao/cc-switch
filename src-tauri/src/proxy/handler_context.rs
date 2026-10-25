@@ -3,7 +3,7 @@
 //! 提供请求生命周期的上下文管理，封装通用初始化逻辑
 
 use crate::app_config::AppType;
-use crate::mode::stack::StackTarget;
+use crate::mode::stack::{StackBalanceContext, StackTarget};
 use crate::provider::Provider;
 use crate::proxy::{
     extract_session_id,
@@ -76,6 +76,8 @@ pub struct RequestContext {
     /// Per-attempt upstream models for a Stack fallback chain. Kept aligned
     /// with `providers`; ordinary routed requests leave this empty.
     stack_attempt_models: Vec<String>,
+    /// Automatic first-attempt assignment for an aggregated-model session.
+    stack_balance: Option<StackBalanceContext>,
 }
 
 impl RequestContext {
@@ -128,6 +130,7 @@ impl RequestContext {
         );
 
         let is_stack = stack.is_some();
+        let stack_balance = stack.as_ref().and_then(|target| target.balance.clone());
         let (provider, providers, current_provider_id, request_model, stack_attempt_models) =
             match stack {
                 Some(target) => {
@@ -244,6 +247,7 @@ impl RequestContext {
             copilot_optimizer_config,
             is_stack,
             stack_attempt_models,
+            stack_balance,
         })
     }
 
@@ -319,6 +323,7 @@ impl RequestContext {
         )
         .stack_request(self.is_stack)
         .stack_attempt_models(self.stack_attempt_models.clone())
+        .stack_balance(self.stack_balance.clone())
         .failover_enabled(self.app_config.auto_failover_enabled)
     }
 
