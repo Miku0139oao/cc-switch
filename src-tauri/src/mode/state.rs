@@ -122,7 +122,8 @@ pub struct StackState {
     /// 退出代理时不动，名单也留着。
     #[serde(default, skip_serializing_if = "is_false")]
     pub enabled: bool,
-    /// 当前 Stack 里的供应商 id，按加入顺序。
+    /// 当前 Stack 里的供应商 id。除默认成员外，这个顺序也是 #0..N 的
+    /// 同模型隐式 fallback 优先级。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<String>,
     /// key 登记簿：key → 供应商 id。一经分配永久归这家，移除成员、删除供应商都不回收：
@@ -142,6 +143,16 @@ pub struct StackState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StackFallbackTarget {
+    pub provider_id: String,
+    pub upstream_model: String,
+}
+
+/// A per-Codex-thread model override. The proxy resolves this on every request,
+/// so changing an active conversation takes effect on its next turn without
+/// rewriting the global route.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRoute {
     pub provider_id: String,
     pub upstream_model: String,
 }
@@ -196,6 +207,10 @@ pub struct AppLiveState {
     pub pending: Option<Pending>,
     #[serde(default, skip_serializing_if = "StackState::is_empty")]
     pub stack: StackState,
+    /// Codex thread id -> pinned provider/model. Kept in live-state because it
+    /// is device-local and can be updated atomically without a schema change.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub session_routes: BTreeMap<String, SessionRoute>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -205,6 +220,7 @@ impl AppLiveState {
         self.pending.is_none()
             && self.written.is_none()
             && self.stack.is_empty()
+            && self.session_routes.is_empty()
             && self.mode_state() == ModeState::default()
             && self.extra.is_empty()
     }
@@ -426,6 +442,19 @@ pub fn stack(store: &DeviceStore, app: &str) -> Result<StackState, AppError> {
         .apps
         .get(app)
         .map(|state| state.stack.clone())
+        .unwrap_or_default())
+}
+
+/// Codex threads with a pinned provider/model on this device.
+pub fn session_routes(
+    store: &DeviceStore,
+    app: &str,
+) -> Result<BTreeMap<String, SessionRoute>, AppError> {
+    let _guard = state_lock().lock().unwrap_or_else(|e| e.into_inner());
+    Ok(load(store)?
+        .apps
+        .get(app)
+        .map(|state| state.session_routes.clone())
         .unwrap_or_default())
 }
 

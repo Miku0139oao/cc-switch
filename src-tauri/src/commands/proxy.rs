@@ -203,6 +203,23 @@ pub async fn set_proxy_stack_member(
     result
 }
 
+/// Reorder the added (non-default) Stack providers. The order is their 0..N
+/// fallback priority and is committed together with the client projection.
+#[tauri::command]
+pub async fn reorder_stack_members(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+    provider_ids: Vec<String>,
+) -> Result<(), crate::mode::controller::StackWriteError> {
+    let app =
+        require_mode_app(&app_type).map_err(crate::mode::controller::StackWriteError::unchanged)?;
+    let result =
+        crate::mode::controller::reorder_stack_members(state.inner(), &app, provider_ids).await;
+    crate::tray::refresh_tray_menu(&app_handle);
+    result
+}
+
 /// Replace an aggregated model's explicit fallback chain.
 #[tauri::command]
 pub async fn set_stack_fallback_chain(

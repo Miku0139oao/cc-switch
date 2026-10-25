@@ -7,6 +7,7 @@ use crate::database::Database;
 use crate::error::AppError;
 use crate::provider::Provider;
 use crate::proxy::circuit_breaker::{AllowResult, CircuitBreaker, CircuitBreakerConfig};
+use crate::services::UsageCache;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -87,6 +88,20 @@ impl ProviderRouter {
         app_type: &str,
         current_provider: Option<Provider>,
     ) -> Result<Vec<Provider>, AppError> {
+        self.select_providers_with_current_and_usage(app_type, current_provider, None)
+            .await
+    }
+
+    /// Same selection as [`Self::select_providers_with_current`], but known
+    /// exhausted quota windows move behind healthy queue entries. Queue order
+    /// still wins within each quota state, and exhausted entries are retained
+    /// as last-resort attempts.
+    pub async fn select_providers_with_current_and_usage(
+        &self,
+        app_type: &str,
+        current_provider: Option<Provider>,
+        usage_cache: Option<&UsageCache>,
+    ) -> Result<Vec<Provider>, AppError> {
         let mut result = Vec::new();
         let mut total_providers = 0usize;
         let mut circuit_open_count = 0usize;
@@ -145,6 +160,15 @@ impl ProviderRouter {
             if let Some(current) = current_provider {
                 total_providers = 1;
                 result.push(current);
+            }
+        }
+
+        if let Some(cache) = usage_cache {
+            if let Ok(app_type) = AppType::from_str(app_type) {
+                let now = chrono::Utc::now();
+                result.sort_by_key(|provider| {
+                    cache.provider_quota_exhausted(&app_type, &provider.id, now)
+                });
             }
         }
 
@@ -506,6 +530,94 @@ mod tests {
         // 故障转移开启时：仅按队列顺序选择（忽略当前供应商）
         assert_eq!(providers[0].id, "b");
         assert_eq!(providers[1].id, "a");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn known_exhausted_queue_head_moves_behind_healthy_provider() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+        let provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        let mut provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        provider_b.sort_index = Some(1);
+
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+        db.add_to_failover_queue("claude", "b").unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let cache = UsageCache::new();
+        cache.put_script(
+            AppType::Claude,
+            "b".to_string(),
+            crate::provider::UsageResult {
+                success: true,
+                data: Some(vec![crate::provider::UsageData {
+                    plan_name: Some("five_hour".to_string()),
+                    extra: Some(format!(
+                        r#"{{"resetsAt":"{}"}}"#,
+                        chrono::Utc::now() + chrono::Duration::hours(1)
+                    )),
+                    is_valid: Some(true),
+                    invalid_message: None,
+                    total: Some(100.0),
+                    used: Some(100.0),
+                    remaining: Some(0.0),
+                    unit: Some("%".to_string()),
+                }]),
+                error: None,
+            },
+        );
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router
+            .select_providers_with_current_and_usage("claude", None, Some(&cache))
+            .await
+            .unwrap();
+        assert_eq!(
+            providers
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+
+        cache.put_script(
+            AppType::Claude,
+            "a".to_string(),
+            crate::provider::UsageResult {
+                success: true,
+                data: Some(vec![crate::provider::UsageData {
+                    plan_name: Some("weekly".to_string()),
+                    extra: None,
+                    is_valid: Some(true),
+                    invalid_message: None,
+                    total: Some(100.0),
+                    used: Some(100.0),
+                    remaining: Some(0.0),
+                    unit: Some("%".to_string()),
+                }]),
+                error: None,
+            },
+        );
+        let providers = router
+            .select_providers_with_current_and_usage("claude", None, Some(&cache))
+            .await
+            .unwrap();
+        assert_eq!(
+            providers
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b", "a"],
+            "when every target is exhausted, preserve queue order as last resort"
+        );
     }
 
     #[tokio::test]

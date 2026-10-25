@@ -32,6 +32,7 @@ use crate::proxy::providers::copilot_model_map::{
     CopilotProtocol, CopilotTransport, ResolvedCopilotModel,
 };
 use crate::proxy::providers::xai_oauth_auth::XaiOAuthManager;
+use crate::services::UsageCache;
 use crate::{
     app_config::AppType,
     provider::{CodexCopilotApiFormat, LocalProxyRequestOverrides, Provider},
@@ -342,6 +343,8 @@ impl Drop for ActiveConnectionGuard {
 pub struct RequestForwarder {
     /// 共享的 ProviderRouter（持有熔断器状态）
     router: Arc<ProviderRouter>,
+    /// Last-known quota limits and short-lived runtime 429 exhaustion markers.
+    usage_cache: Arc<UsageCache>,
     status: Arc<RwLock<ProxyStatus>>,
     current_providers: Arc<RwLock<std::collections::HashMap<String, (String, String)>>>,
     gemini_shadow: Arc<GeminiShadowStore>,
@@ -455,6 +458,7 @@ impl RequestForwarder {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         router: Arc<ProviderRouter>,
+        usage_cache: Arc<UsageCache>,
         non_streaming_timeout: u64,
         status: Arc<RwLock<ProxyStatus>>,
         current_providers: Arc<RwLock<std::collections::HashMap<String, (String, String)>>>,
@@ -477,6 +481,7 @@ impl RequestForwarder {
         let max_attempts = (max_retries as usize).saturating_add(1);
         Self {
             router,
+            usage_cache,
             status,
             current_providers,
             gemini_shadow,
@@ -725,6 +730,12 @@ impl RequestForwarder {
         error: &ProxyError,
         last_error: String,
     ) {
+        if proxy_error_class(error) == "quota_exhausted" {
+            if let Ok(app_type) = app_type_str.parse::<AppType>() {
+                self.usage_cache
+                    .mark_runtime_quota_exhausted(&app_type, &provider.id);
+            }
+        }
         if !self.provider_health_enabled() {
             return;
         }
@@ -4911,6 +4922,7 @@ mod tests {
 
         RequestForwarder {
             router: Arc::new(ProviderRouter::new(db.clone())),
+            usage_cache: Arc::new(UsageCache::new()),
             status: Arc::new(RwLock::new(ProxyStatus::default())),
             current_providers: Arc::new(RwLock::new(HashMap::new())),
             gemini_shadow: Arc::new(GeminiShadowStore::new()),
@@ -8450,6 +8462,11 @@ mod tests {
             );
             assert_eq!(breaker(&fwd, "p1").await, Some((1, 1)));
             assert_eq!(breaker(&fwd, "p2").await, Some((1, 0)));
+            assert!(fwd.usage_cache.provider_quota_exhausted(
+                &AppType::Claude,
+                "p1",
+                chrono::Utc::now()
+            ));
         }
 
         #[tokio::test]

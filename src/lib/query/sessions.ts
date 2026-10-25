@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   useInfiniteQuery,
+  useMutation,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -19,6 +20,8 @@ import { buildTurnIndex, buildTurns } from "@/components/sessions/reader/turns";
  */
 
 export const sessionKeys = {
+  codexRoutes: ["codexSessionRoutes"] as const,
+  codexModels: ["codexSessionModels"] as const,
   messages: (providerId?: string, sourcePath?: string) =>
     ["sessionMessages", providerId, sourcePath] as const,
   transcript: (providerId?: string, sourcePath?: string) =>
@@ -31,6 +34,48 @@ export const sessionKeys = {
       ref ? stableKey(ref) : null,
     ] as const,
 };
+
+export const useCodexSessionRoutes = (enabled = true) =>
+  useQuery({
+    queryKey: sessionKeys.codexRoutes,
+    queryFn: () => sessionsApi.getCodexRoutes(),
+    enabled,
+    staleTime: 30 * 1000,
+  });
+
+export const useCodexSessionModels = (enabled = true) =>
+  useQuery({
+    queryKey: sessionKeys.codexModels,
+    queryFn: () => sessionsApi.listCodexModels(),
+    enabled,
+    staleTime: 30 * 1000,
+  });
+
+export function useSetCodexSessionRoute() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      sessionId,
+      providerId,
+      upstreamModel,
+    }: {
+      sessionId: string;
+      providerId: string;
+      upstreamModel: string;
+    }) => sessionsApi.setCodexRoute(sessionId, providerId, upstreamModel),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: sessionKeys.codexRoutes }),
+  });
+}
+
+export function useClearCodexSessionRoute() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (sessionId: string) => sessionsApi.clearCodexRoute(sessionId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: sessionKeys.codexRoutes }),
+  });
+}
 
 /** 键顺序无关的序列化：ContentRef / ImageRef 做 query key、缓存 key 用 */
 export const stableKey = (value: unknown): string => {

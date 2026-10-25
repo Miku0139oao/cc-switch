@@ -174,6 +174,26 @@ export const handlers = [
 
   http.post(`${TAURI_ENDPOINT}/list_sessions`, () => success(listSessions())),
 
+  http.post(`${TAURI_ENDPOINT}/get_codex_session_routes`, () => success({})),
+  http.post(`${TAURI_ENDPOINT}/list_codex_session_models`, () =>
+    success([
+      {
+        providerId: "codex-alpha",
+        providerName: "Codex Alpha",
+        upstreamModel: "gpt-alpha",
+        official: false,
+      },
+      {
+        providerId: "codex-beta",
+        providerName: "Codex Beta",
+        upstreamModel: "gpt-beta",
+        official: false,
+      },
+    ]),
+  ),
+  http.post(`${TAURI_ENDPOINT}/set_codex_session_route`, () => success(null)),
+  http.post(`${TAURI_ENDPOINT}/clear_codex_session_route`, () => success(null)),
+
   http.post(`${TAURI_ENDPOINT}/get_session_messages`, async ({ request }) => {
     const { providerId, sourcePath } = await withJson<{
       providerId: string;

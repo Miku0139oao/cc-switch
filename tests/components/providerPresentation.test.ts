@@ -41,6 +41,7 @@ function actions() {
     queueMove: vi.fn(),
     stackAdd: vi.fn(),
     stackRemove: vi.fn(),
+    stackMove: vi.fn(),
     stackSetDefault: vi.fn(),
   };
 }
@@ -342,11 +343,13 @@ describe("buildSwitchSections — stack", () => {
       tone: "stack",
       status: { label: "providerCard.status.currentDefault" },
     });
-    // 发布了 0 个模型的成员要提醒
-    expect(item(sections, "backup").chips[0]).toMatchObject({
-      key: "models",
-      tone: "warning",
-    });
+    // 发布了 0 个模型的成员要提醒；优先级徽章同在，不依赖两者的先后顺序
+    expect(item(sections, "backup").chips).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "priority", label: "#0" }),
+        expect.objectContaining({ key: "models", tone: "warning" }),
+      ]),
+    );
     // 行上只有名单的移除 / 添加；「设为默认」在「更多」菜单里
     expect(item(sections, "backup").buttons.map((b) => b.key)).toEqual([
       "remove",
@@ -403,6 +406,32 @@ describe("buildSwitchSections — stack", () => {
     expect(setDefaultItem(sections, "backup").disabledReason).toBeUndefined();
     setDefaultItem(sections, "converted").onSelect();
     expect(input.actions.stackSetDefault).toHaveBeenCalledWith(converted);
+  });
+
+  it("uses persisted Stack order for #0..N priority and move actions", () => {
+    const { sections, input } = build({
+      active: "stack",
+      view: "stack",
+      routeId: "relay",
+      stackMembers: new Map([
+        ["relay", 1],
+        ["backup", 1],
+        ["converted", 1],
+      ]),
+      stackOrder: ["relay", "converted", "backup"],
+    });
+
+    expect(item(sections, "converted").chips[0]).toMatchObject({
+      key: "priority",
+      label: "#0",
+    });
+    expect(item(sections, "backup").chips[0]).toMatchObject({
+      key: "priority",
+      label: "#1",
+    });
+    expect(item(sections, "converted").move?.onUp).toBeUndefined();
+    item(sections, "converted").move?.onDown?.();
+    expect(input.actions.stackMove).toHaveBeenCalledWith(converted, 1);
   });
 
   it("does not let the Stack default change from the preview while routing", () => {

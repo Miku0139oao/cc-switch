@@ -138,6 +138,8 @@ export interface SwitchModeInput {
   queue: string[];
   /** 聚合名单（含默认那家）：id → 发布的模型数 */
   stackMembers: Map<string, number>;
+  /** 聚合成员的持久化顺序；未传时退回 Map 的插入顺序。 */
+  stackOrder?: string[];
   /** 需要路由的原因（悬停「需要路由」时的说明） */
   routingReason: (provider: Provider) => string;
   serviceRunning: boolean;
@@ -151,6 +153,7 @@ export interface SwitchModeInput {
     queueMove: (provider: Provider, delta: -1 | 1) => void;
     stackAdd: (provider: Provider) => void;
     stackRemove: (provider: Provider) => void;
+    stackMove: (provider: Provider, delta: -1 | 1) => void;
     stackSetDefault: (provider: Provider) => void;
   };
 }
@@ -198,6 +201,7 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
     failoverOn,
     queue,
     stackMembers,
+    stackOrder,
     actions,
   } = input;
   // 早期绑定托管账号的 Codex 官方卡没有 category，按身份认
@@ -495,9 +499,12 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
       onSelect: () => actions.stackSetDefault(p),
     },
   ];
-  const memberIds = providers
-    .filter((p) => p.id !== defaultId && stackMembers.has(p.id))
-    .map((p) => p.id);
+  const orderedMemberIds = (
+    stackOrder?.length ? stackOrder : Array.from(stackMembers.keys())
+  ).filter((id) => id !== defaultId && stackMembers.has(id));
+  const visibleMemberIds = orderedMemberIds.filter((id) =>
+    providers.some((provider) => provider.id === id),
+  );
   const modelsChip = (p: Provider): CardChip => {
     const count = stackMembers.get(p.id) ?? 0;
     return count > 0
@@ -543,13 +550,31 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
       ]
     : [];
 
-  const memberItems = memberIds.map((id) => {
+  const memberItems = visibleMemberIds.map((id) => {
     const p = providers.find((x) => x.id === id)!;
+    const priority = orderedMemberIds.indexOf(id);
     return {
       provider: p,
       presentation: {
-        chips: [modelsChip(p)],
+        chips: [
+          {
+            key: "priority",
+            label: `#${priority}`,
+            tone: "outline" as const,
+            title: t("providerCard.priority.tooltip", {
+              priority,
+            }),
+          },
+          modelsChip(p),
+        ],
         menuItems: setDefaultItems(p),
+        move: {
+          onUp: priority > 0 ? () => actions.stackMove(p, -1) : undefined,
+          onDown:
+            priority < orderedMemberIds.length - 1
+              ? () => actions.stackMove(p, 1)
+              : undefined,
+        },
         buttons: [
           {
             key: "remove",
@@ -562,7 +587,7 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
   });
 
   const availItems = providers
-    .filter((p) => p.id !== defaultId && !memberIds.includes(p.id))
+    .filter((p) => p.id !== defaultId && !orderedMemberIds.includes(p.id))
     .map((p) => {
       if (blockedFromRouting(app, p)) {
         return blocked(

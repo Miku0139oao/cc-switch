@@ -20,6 +20,7 @@ import {
   useAppMode,
   useProxyStack,
   useProxyStatusQuery,
+  useReorderStackMembers,
   useSetProxyStackMember,
 } from "@/lib/query/proxy";
 import {
@@ -148,6 +149,7 @@ export function SwitchModePanel({
   const removeFromQueue = useRemoveFromFailoverQueue();
   const { data: stack } = useProxyStack(app, isStackAppId(app));
   const setStackMember = useSetProxyStackMember();
+  const reorderStackMembers = useReorderStackMembers();
   const adoptCatalog = useAdoptCodexStackCatalog();
   const modeActions = useModeActions(app);
   const desktopMessages = useDesktopConfigMessages(app === "claude-desktop");
@@ -188,6 +190,10 @@ export function SwitchModePanel({
     }
     return members;
   }, [stack?.members]);
+  const stackOrder = useMemo(
+    () => (stack?.members ?? []).map((member) => member.providerId),
+    [stack?.members],
+  );
 
   const queueIds = useMemo(
     () => (queue ?? []).map((item) => item.providerId),
@@ -220,6 +226,17 @@ export function SwitchModePanel({
     }
   };
 
+  const stackMove = (provider: Provider, delta: -1 | 1) => {
+    const defaultStackId = routeId ?? directId;
+    const priorities = stackOrder.filter((id) => id !== defaultStackId);
+    const index = priorities.indexOf(provider.id);
+    const target = index + delta;
+    if (index < 0 || target < 0 || target >= priorities.length) return;
+    const next = [...priorities];
+    [next[index], next[target]] = [next[target], next[index]];
+    reorderStackMembers.mutate({ appType: app, providerIds: next });
+  };
+
   const rememberDefault = async (provider: Provider) => {
     try {
       const result = await proxyApi.setProxyRoute(app, provider.id);
@@ -244,6 +261,7 @@ export function SwitchModePanel({
     failoverOn,
     queue: queueIds,
     stackMembers,
+    stackOrder,
     serviceRunning,
     routingReason: (provider: Provider) =>
       getRoutingReason(app, provider, t) ?? "",
@@ -277,6 +295,7 @@ export function SwitchModePanel({
           enabled: false,
         });
       },
+      stackMove,
       // 聚合生效时换默认当场生效（同切换供应商）；没生效时只记下选择，切换时的确认框预选它
       stackSetDefault: (provider: Provider) =>
         active === "stack"
@@ -617,11 +636,7 @@ export function SwitchModePanel({
           </div>
         )}
         {view === "stack" && isStackAppId(app) && (
-          <StackFallbackEditor
-            app={app}
-            stack={stack}
-            providers={providers}
-          />
+          <StackFallbackEditor app={app} stack={stack} providers={providers} />
         )}
         <ProviderList
           {...listCallbacks}

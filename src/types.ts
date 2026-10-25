@@ -545,6 +545,20 @@ export interface SessionMeta {
   resumeCommand?: string;
 }
 
+export interface CodexSessionRoute {
+  providerId: string;
+  upstreamModel: string;
+}
+
+export interface CodexSessionModelTarget {
+  providerId: string;
+  providerName: string;
+  upstreamModel: string;
+  official: boolean;
+}
+
+export type CodexSessionRoutes = Record<string, CodexSessionRoute>;
+
 // ─── 会话阅读页数据模型（对应 Rust session_manager/model.rs） ───
 
 export type ToolKind =

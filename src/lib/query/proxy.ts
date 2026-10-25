@@ -159,6 +159,47 @@ export function useSetProxyStackMember() {
   });
 }
 
+export function useReorderStackMembers() {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: ({
+      appType,
+      providerIds,
+    }: {
+      appType: string;
+      providerIds: string[];
+    }) => proxyApi.reorderStackMembers(appType, providerIds),
+    onSuccess: (_data, variables) => {
+      toast.success(t("provider.stackPrioritySaved"), { closeButton: true });
+      if (
+        variables.appType === "codex" ||
+        variables.appType === "claude-desktop"
+      ) {
+        toast.info(t("provider.stackReselectHint"), { closeButton: true });
+      }
+    },
+    onError: (error: unknown) => {
+      if (isStackWriteError(error) && error.partial) {
+        toast.warning(t("provider.stackPartial"), {
+          description: error.message,
+          closeButton: true,
+        });
+        return;
+      }
+      toast.error(t("provider.stackPriorityFailed"), {
+        description: extractErrorMessage(error),
+      });
+    },
+    onSettled: (_data, _error, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["providers", variables.appType],
+      });
+    },
+  });
+}
+
 export function useSetStackFallbackChain() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();

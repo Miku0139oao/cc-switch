@@ -1758,6 +1758,7 @@ pub fn run() {
             commands::switch_proxy_provider,
             commands::get_proxy_stack,
             commands::set_proxy_stack_member,
+            commands::reorder_stack_members,
             commands::set_stack_fallback_chain,
             commands::adopt_codex_stack_catalog,
             commands::restart_codex_app_server_daemon,
@@ -1802,6 +1803,10 @@ pub fn run() {
             commands::stream_check_provider,
             // Session manager
             commands::list_sessions,
+            commands::get_codex_session_routes,
+            commands::list_codex_session_models,
+            commands::set_codex_session_route,
+            commands::clear_codex_session_route,
             commands::get_session_messages,
             commands::stream_session_messages,
             commands::get_session_block_content,

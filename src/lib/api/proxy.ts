@@ -117,6 +117,14 @@ export const proxyApi = {
     return invoke("set_proxy_stack_member", { appType, providerId, enabled });
   },
 
+  // 已加入成员（不含默认）的 0..N 优先顺序；后端会保留默认成员原位置。
+  async reorderStackMembers(
+    appType: string,
+    providerIds: string[],
+  ): Promise<void> {
+    return invoke("reorder_stack_members", { appType, providerIds });
+  },
+
   async setStackFallbackChain(
     appType: string,
     modelId: string,

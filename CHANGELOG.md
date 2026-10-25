@@ -8,10 +8,13 @@ All notable changes to CC Switch will be documented in this file.
 
 - **主控制台**：集中查看各 agent 的模式、路由／聚合状态、健康状态与关键供应商额度，支持全部刷新。
 - **聚合模型 fallback**：每个对外模型可设置有序的 provider/model 备用链，使用独立的事件记录与严格可用性错误分类。
+- **聚合成员优先级**：已加入的供应商按 `#0..N` 排序；未配置模型级 fallback 时，同名上游模型会依此顺序自动接续。
+- **Codex 会话级模型路由**：每个会话可固定到不同供应商／模型，下一轮立即生效，支持对话中切换且不修改全局路由。
 
 ### Changed
 
 - **官方账号代理**：官方 OAuth／订阅账号也可进入路由与 fallback；账号绑定和凭据注入仍由各 adapter 校验。
+- **额度感知 fallback**：5 小时、每周或每月额度窗口耗尽时自动避让；实际收到额度型 429 后也会标记该供应商并切换。
 - **桌面 WebView 体验**：普通界面不再意外选中文字或弹出浏览器右键菜单，输入框、日志、代码与会话正文保留原生复制菜单。
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),

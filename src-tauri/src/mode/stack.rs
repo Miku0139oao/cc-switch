@@ -27,6 +27,7 @@ use crate::live::project::claude::{env_string, has_one_m_marker, ONE_M_MARKER_FO
 use crate::provider::{ClaudeStackModel, Provider};
 use crate::proxy::model_mapper::strip_one_m_suffix_for_upstream;
 use crate::services::provider::codex_client_catalog::StaleClients;
+use crate::services::UsageCache;
 
 use super::state::{self, StackState};
 
@@ -367,15 +368,21 @@ fn stack_models(key: &str, provider: &Provider, found: Vec<Found>) -> Vec<StackM
 /// Codex 行发布的模型 id：行里的模型目录，没有配置目录时只有行的 `model`。显示名和窗口
 /// 由目录条目决定（`codex_config::plan_codex_stack_catalog`）。
 pub fn codex_model_ids(key: &str, provider: &Provider) -> Vec<String> {
+    codex_models(provider)
+        .into_iter()
+        .map(|model| encode(&AppType::Codex, key, &model, false))
+        .collect()
+}
+
+/// Codex provider 实际可选的 upstream model ids, including its catalog and
+/// configured default model. Kept unencoded for per-session routing.
+pub fn codex_models(provider: &Provider) -> Vec<String> {
     let config = provider
         .settings_config
         .get("config")
         .and_then(Value::as_str)
         .unwrap_or("");
     crate::codex_config::codex_published_models(&provider.settings_config, config)
-        .into_iter()
-        .map(|model| encode(&AppType::Codex, key, &model, false))
-        .collect()
 }
 
 /// Claude Desktop Stack 供应商发布的一个模型。
@@ -690,10 +697,20 @@ pub fn resolve(
     app: &AppType,
     model: &str,
 ) -> Result<Resolved, AppError> {
+    resolve_with_quota(db, store, app, model, None)
+}
+
+pub fn resolve_with_quota(
+    db: &Database,
+    store: &DeviceStore,
+    app: &AppType,
+    model: &str,
+    quota_cache: Option<&UsageCache>,
+) -> Result<Resolved, AppError> {
     let (key, model_part, one_m) = match decode(app, model) {
         Decoded::Plain => return Ok(Resolved::Plain),
         Decoded::Malformed => return Ok(Resolved::Miss(StackMiss::Unknown)),
-        Decoded::Code(code) => return resolve_desktop(db, store, app, model, code),
+        Decoded::Code(code) => return resolve_desktop(db, store, app, model, code, quota_cache),
         Decoded::Stack { key, model, one_m } => (key, model, one_m),
     };
     if !state::stack_mode(store, app.as_str())? {
@@ -728,7 +745,19 @@ pub fn resolve(
             model_part.to_string()
         }
     });
-    let fallbacks = resolve_fallbacks(db, app, &stack, model, &provider.id)?;
+    let route = state::mode_state(store, app.as_str())?.proxy_route;
+    let members = members(db, app, &stack, route.as_deref())?;
+    let fallbacks = resolve_fallbacks(
+        db,
+        app,
+        &stack,
+        model,
+        &provider.id,
+        &upstream_model,
+        &members,
+    )?;
+    let (provider, upstream_model, fallbacks) =
+        prefer_available_attempts(app, quota_cache, provider, upstream_model, fallbacks);
     Ok(Resolved::Hit(Box::new(StackTarget {
         provider,
         upstream_model,
@@ -743,6 +772,8 @@ fn resolve_fallbacks(
     stack: &StackState,
     published_model: &str,
     primary_provider_id: &str,
+    primary_upstream_model: &str,
+    members: &[Member],
 ) -> Result<Vec<ResolvedFallback>, AppError> {
     let mut resolved = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -763,7 +794,104 @@ fn resolve_fallbacks(
             upstream_model: target.upstream_model.clone(),
         });
     }
+    if !resolved.is_empty() {
+        return Ok(resolved);
+    }
+
+    // With no explicit chain, match the same upstream model across joined
+    // providers in Stack priority order. Never silently substitute a different
+    // model; cross-model fallbacks remain explicit user choices.
+    for member in members {
+        if member.provider.id == primary_provider_id {
+            continue;
+        }
+        let Some(upstream_model) = matching_upstream_model(app, member, primary_upstream_model)
+        else {
+            continue;
+        };
+        if !seen.insert((member.provider.id.clone(), upstream_model.clone())) {
+            continue;
+        }
+        resolved.push(ResolvedFallback {
+            provider: member.provider.clone(),
+            upstream_model,
+        });
+    }
     Ok(resolved)
+}
+
+fn matching_upstream_model(app: &AppType, member: &Member, desired: &str) -> Option<String> {
+    let desired = strip_one_m_suffix_for_upstream(desired)
+        .trim()
+        .to_ascii_lowercase();
+    match app {
+        AppType::Claude => claude_models(&member.key, &member.provider)
+            .into_iter()
+            .find(|model| {
+                strip_one_m_suffix_for_upstream(&model.upstream)
+                    .trim()
+                    .to_ascii_lowercase()
+                    == desired
+            })
+            .map(|model| model.upstream),
+        AppType::ClaudeDesktop => desktop_models(&member.key, &member.provider)
+            .into_iter()
+            .find(|model| model.upstream.trim().to_ascii_lowercase() == desired)
+            .map(|model| model.upstream),
+        _ => codex_model_ids(&member.key, &member.provider)
+            .into_iter()
+            .filter_map(|id| {
+                id.split_once(CODEX_SEPARATOR)
+                    .map(|(_, model)| model.to_string())
+            })
+            .find(|model| model.trim().to_ascii_lowercase() == desired),
+    }
+}
+
+fn prefer_available_attempts(
+    app: &AppType,
+    quota_cache: Option<&UsageCache>,
+    provider: Provider,
+    upstream_model: String,
+    fallbacks: Vec<ResolvedFallback>,
+) -> (Provider, String, Vec<ResolvedFallback>) {
+    let Some(cache) = quota_cache else {
+        return (provider, upstream_model, fallbacks);
+    };
+    let mut attempts = vec![(provider, upstream_model)];
+    attempts.extend(
+        fallbacks
+            .into_iter()
+            .map(|fallback| (fallback.provider, fallback.upstream_model)),
+    );
+    let now = chrono::Utc::now();
+    let exhausted: Vec<bool> = attempts
+        .iter()
+        .map(|(provider, _)| cache.provider_quota_exhausted(app, &provider.id, now))
+        .collect();
+    if exhausted.iter().all(|value| *value) || exhausted.iter().all(|value| !*value) {
+        let mut attempts = attempts.into_iter();
+        let (provider, upstream_model) = attempts.next().expect("primary attempt exists");
+        let fallbacks = attempts
+            .map(|(provider, upstream_model)| ResolvedFallback {
+                provider,
+                upstream_model,
+            })
+            .collect();
+        return (provider, upstream_model, fallbacks);
+    }
+
+    let mut indexed = attempts.into_iter().zip(exhausted).collect::<Vec<_>>();
+    indexed.sort_by_key(|(_, exhausted)| *exhausted);
+    let mut indexed = indexed.into_iter().map(|(attempt, _)| attempt);
+    let (provider, upstream_model) = indexed.next().expect("primary attempt exists");
+    let fallbacks = indexed
+        .map(|(provider, upstream_model)| ResolvedFallback {
+            provider,
+            upstream_model,
+        })
+        .collect();
+    (provider, upstream_model, fallbacks)
 }
 
 /// Claude Desktop 的数字 id：先按名单顺序在发布出去的成员（路由那家以外）里找，和
@@ -776,6 +904,7 @@ fn resolve_desktop(
     app: &AppType,
     model: &str,
     code: &str,
+    quota_cache: Option<&UsageCache>,
 ) -> Result<Resolved, AppError> {
     if !state::stack_mode(store, app.as_str())? {
         return Ok(Resolved::Miss(StackMiss::StackOff));
@@ -791,11 +920,27 @@ fn resolve_desktop(
             .into_iter()
             .find(|published| published.id == id)
         {
+            let fallbacks = resolve_fallbacks(
+                db,
+                app,
+                &stack,
+                model,
+                &member.provider.id,
+                &found.upstream,
+                &members,
+            )?;
+            let (provider, upstream_model, fallbacks) = prefer_available_attempts(
+                app,
+                quota_cache,
+                member.provider.clone(),
+                found.upstream,
+                fallbacks,
+            );
             return Ok(Resolved::Hit(Box::new(StackTarget {
-                provider: member.provider.clone(),
-                upstream_model: found.upstream,
+                provider,
+                upstream_model,
                 original_model: model.to_string(),
-                fallbacks: resolve_fallbacks(db, app, &stack, model, &member.provider.id)?,
+                fallbacks,
             })));
         }
     }
@@ -1314,6 +1459,97 @@ mod tests {
         assert_eq!(target.fallbacks.len(), 1);
         assert_eq!(target.fallbacks[0].provider.id, "zhipu");
         assert_eq!(target.fallbacks[0].upstream_model, "glm-5.2[1M]");
+    }
+
+    #[test]
+    fn implicit_fallbacks_follow_member_priority_for_the_same_model() {
+        let fx = fixture();
+        for id in ["backup-a", "backup-b"] {
+            let row = provider(id, id, None, json!({ "ANTHROPIC_MODEL": "kimi-k3" }));
+            fx.db.save_provider("claude", &row).unwrap();
+        }
+        state::update(&fx.store, |live| {
+            let stack = &mut live.apps.get_mut("claude").unwrap().stack;
+            stack.members = ["kimi", "backup-b", "backup-a"]
+                .map(str::to_string)
+                .to_vec();
+            stack
+                .keys
+                .insert("backup-a".to_string(), "backup-a".to_string());
+            stack
+                .keys
+                .insert("backup-b".to_string(), "backup-b".to_string());
+        })
+        .unwrap();
+
+        let Resolved::Hit(target) = resolve_in(&fx, AppType::Claude, "ccs-claude-kimi--kimi-k3")
+        else {
+            panic!("expected primary model");
+        };
+        assert_eq!(
+            target
+                .fallbacks
+                .iter()
+                .map(|fallback| fallback.provider.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["backup-b", "backup-a"]
+        );
+    }
+
+    #[test]
+    fn known_exhausted_primary_promotes_the_next_healthy_same_model_member() {
+        let fx = fixture();
+        let backup = provider(
+            "backup",
+            "Backup",
+            None,
+            json!({ "ANTHROPIC_MODEL": "kimi-k3" }),
+        );
+        fx.db.save_provider("claude", &backup).unwrap();
+        state::update(&fx.store, |live| {
+            let stack = &mut live.apps.get_mut("claude").unwrap().stack;
+            stack.members.push("backup".to_string());
+            stack
+                .keys
+                .insert("backup".to_string(), "backup".to_string());
+        })
+        .unwrap();
+
+        let cache = UsageCache::new();
+        let reset = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        cache.put_script(
+            AppType::Claude,
+            "kimi".to_string(),
+            crate::provider::UsageResult {
+                success: true,
+                data: Some(vec![crate::provider::UsageData {
+                    plan_name: Some("five_hour".to_string()),
+                    extra: Some(format!(r#"{{"resetsAt":"{reset}"}}"#)),
+                    is_valid: Some(true),
+                    invalid_message: None,
+                    total: Some(100.0),
+                    used: Some(100.0),
+                    remaining: Some(0.0),
+                    unit: Some("%".to_string()),
+                }]),
+                error: None,
+            },
+        );
+        let Resolved::Hit(target) = resolve_with_quota(
+            &fx.db,
+            &fx.store,
+            &AppType::Claude,
+            "ccs-claude-kimi--kimi-k3",
+            Some(&cache),
+        )
+        .unwrap() else {
+            panic!("expected primary model");
+        };
+
+        assert_eq!(target.provider.id, "backup");
+        assert_eq!(target.upstream_model, "kimi-k3");
+        assert_eq!(target.fallbacks.len(), 1);
+        assert_eq!(target.fallbacks[0].provider.id, "kimi");
     }
 
     fn miss(resolved: Resolved) -> StackMiss {

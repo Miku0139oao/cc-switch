@@ -1277,6 +1277,95 @@ pub async fn set_stack_member(
     })
 }
 
+/// Reorder the non-default Stack members. The default/route provider keeps its
+/// existing slot; `provider_ids` must be a permutation of every other member.
+pub async fn reorder_stack_members(
+    state: &AppState,
+    app: &AppType,
+    provider_ids: Vec<String>,
+) -> Result<(), StackWriteError> {
+    if !stack::supports_stack(app) {
+        return Err(StackWriteError::unchanged(format!(
+            "{} 不支持聚合模式 ({} does not support Aggregation mode)",
+            app.as_str(),
+            app.as_str()
+        )));
+    }
+    let _guard = lock_settled(state, app)
+        .await
+        .map_err(|error| StackWriteError::unchanged(error.to_string()))?;
+    if let Err(message) = reorder_stack_members_locked(state, app, provider_ids).await {
+        let partial = operation::pending_published(&DeviceStore::for_device(), app.as_str())
+            .unwrap_or_else(|error| {
+                log::warn!("读取 {} 的写前意图失败: {error}", app.as_str());
+                None
+            })
+            == Some(true);
+        return Err(StackWriteError { partial, message });
+    }
+    Ok(())
+}
+
+async fn reorder_stack_members_locked(
+    state: &AppState,
+    app: &AppType,
+    provider_ids: Vec<String>,
+) -> Result<(), String> {
+    let current = settled_stack(app)?;
+    let route = current::mode_state(app).proxy_route;
+    let expected: Vec<&str> = current
+        .members
+        .iter()
+        .filter(|id| Some(id.as_str()) != route.as_deref())
+        .map(String::as_str)
+        .collect();
+    let mut requested = provider_ids;
+    let mut unique = std::collections::HashSet::with_capacity(requested.len());
+    if requested.len() != expected.len()
+        || requested
+            .iter()
+            .any(|id| !expected.contains(&id.as_str()) || !unique.insert(id.clone()))
+    {
+        return Err("聚合成员顺序必须包含每个非默认成员各一次".to_string());
+    }
+
+    let mut next = current.clone();
+    let mut requested = requested.drain(..);
+    next.members = current
+        .members
+        .iter()
+        .map(|id| {
+            if Some(id.as_str()) == route.as_deref() {
+                id.clone()
+            } else {
+                requested
+                    .next()
+                    .expect("provider count was validated above")
+            }
+        })
+        .collect();
+    if next == current {
+        return Ok(());
+    }
+
+    match attached_route(state, app)? {
+        Some((mode, route)) => {
+            let live_now = LiveNow::of(state, app, &mode)?;
+            write_proxy(state, app, op::STACK, &route, &live_now, mode, Some(next))
+                .await
+                .map(|_| ())
+        }
+        None => commit_state(
+            state,
+            app,
+            &PendingTarget {
+                stack: Some(next),
+                ..PendingTarget::default()
+            },
+        ),
+    }
+}
+
 async fn set_stack_member_locked(
     state: &AppState,
     app: &AppType,
@@ -5840,6 +5929,42 @@ model_provider = "c"
 
     #[tokio::test]
     #[serial]
+    async fn reorder_stack_members_keeps_the_default_slot_and_updates_priority() {
+        let _home = Home::new();
+        seed_settings(USER_SETTINGS);
+        let state = state_with(AppType::Claude, &stack_rows(), "a").await;
+        enter_with_route(&state, &AppType::Claude, true, Some("a"))
+            .await
+            .expect("enter stack");
+        set_stack_member(&state, &AppType::Claude, "kimi", true)
+            .await
+            .expect("add kimi");
+        set_stack_member(&state, &AppType::Claude, "zhipu", true)
+            .await
+            .expect("add zhipu");
+
+        reorder_stack_members(
+            &state,
+            &AppType::Claude,
+            vec!["zhipu".to_string(), "kimi".to_string()],
+        )
+        .await
+        .expect("reorder");
+
+        let stack = stack_state();
+        assert_eq!(stack.members, vec!["a", "zhipu", "kimi"]);
+        let members = stack_views(&state, &AppType::Claude).unwrap().members;
+        assert_eq!(
+            members
+                .iter()
+                .map(|member| member.provider_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "zhipu", "kimi"]
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn a_users_own_model_discovery_switch_survives_switches_and_proxy_mode() {
         let _home = Home::new();
         let mut user: Value = serde_json::from_str(USER_SETTINGS).unwrap();
@@ -6042,13 +6167,21 @@ model_provider = "c"
         assert!(stack_state().is_empty());
         assert_back_to_user_settings();
 
-        // 不存在的、不能走代理的官方订阅：拒绝，记下的那家不变。
+        // 官方订阅也可走代理：只记下指针。不存在的供应商仍然拒绝。
         set_route(&state, &AppType::Claude, "missing")
             .await
             .expect_err("unknown provider");
         set_route(&state, &AppType::Claude, "official")
             .await
-            .expect_err("official subscription");
+            .expect("official subscription route");
+        assert_eq!(view().route_provider_id.as_deref(), Some("official"));
+        assert_eq!(view().direct_provider_id.as_deref(), Some("a"));
+        assert_eq!(in_use(&state, &AppType::Claude).as_deref(), Some("a"));
+        assert_back_to_user_settings();
+
+        set_route(&state, &AppType::Claude, "kimi")
+            .await
+            .expect("remember kimi again");
         assert_eq!(view().route_provider_id.as_deref(), Some("kimi"));
 
         // 进入聚合模式沿用记下的那家：它是默认，随之加入名单。
@@ -6772,22 +6905,22 @@ model_provider = "c"
 
     #[tokio::test]
     #[serial]
-    async fn official_accounts_cannot_be_stacked() {
+    async fn official_accounts_can_be_stacked() {
         let _home = Home::new();
         seed_settings(USER_SETTINGS);
         let mut official = claude("official", "https://api.anthropic.com", json!({}));
         official.category = Some("official".to_string());
         let rows = [claude("a", "https://a.example", json!({})), official];
         let state = state_with(AppType::Claude, &rows, "a").await;
-        let error = set_stack_member(&state, &AppType::Claude, "official", true)
+        set_stack_member(&state, &AppType::Claude, "official", true)
             .await
-            .expect_err("official");
-        assert!(!error.partial);
-        assert!(stack_state().is_empty());
+            .expect("official subscription");
+        assert!(stack_state().is_member("official"));
         let error = set_stack_member(&state, &AppType::Claude, "missing", true)
             .await
             .expect_err("missing");
         assert!(!error.partial);
+        assert!(stack_state().is_member("official"));
     }
 
     #[tokio::test]

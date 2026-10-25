@@ -57,6 +57,7 @@ import { PathChip } from "./PathChip";
 import { formatDuration } from "./toolSummary";
 import type { ReaderFilter } from "./turns";
 import { useMoneyFormat } from "@/hooks/useMoneyFormat";
+import { SessionModelRoutePicker } from "./SessionModelRoutePicker";
 
 export const readerIconButton =
   "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-control text-fg-2 transition-colors hover:bg-subtle hover:text-fg-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40";
@@ -644,14 +645,22 @@ export const SessionReaderToolbar = memo(function SessionReaderToolbar({
               </span>
             </>
           )}
-          {model && (
+          {session.providerId === "codex" ? (
+            <>
+              <Sep />
+              <SessionModelRoutePicker
+                sessionId={session.sessionId}
+                fallbackModel={model}
+              />
+            </>
+          ) : model ? (
             <>
               <Sep />
               <span className="min-w-0 truncate font-mono text-fg-3">
                 {model}
               </span>
             </>
-          )}
+          ) : null}
           <SessionUsageSummary session={session} />
         </div>
 

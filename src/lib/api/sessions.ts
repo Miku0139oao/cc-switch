@@ -1,5 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
+  CodexSessionModelTarget,
+  CodexSessionRoutes,
   ContentRef,
   ImageRef,
   SessionMessage,
@@ -37,6 +39,30 @@ export interface BlockContentPage {
 export const sessionsApi = {
   async list(): Promise<SessionMeta[]> {
     return await invoke("list_sessions");
+  },
+
+  async getCodexRoutes(): Promise<CodexSessionRoutes> {
+    return await invoke("get_codex_session_routes");
+  },
+
+  async listCodexModels(): Promise<CodexSessionModelTarget[]> {
+    return await invoke("list_codex_session_models");
+  },
+
+  async setCodexRoute(
+    sessionId: string,
+    providerId: string,
+    upstreamModel: string,
+  ): Promise<void> {
+    return await invoke("set_codex_session_route", {
+      sessionId,
+      providerId,
+      upstreamModel,
+    });
+  },
+
+  async clearCodexRoute(sessionId: string): Promise<void> {
+    return await invoke("clear_codex_session_route", { sessionId });
   },
 
   async getMessages(

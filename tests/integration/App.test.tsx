@@ -11,6 +11,7 @@ import {
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { http, HttpResponse } from "msw";
 import { providersApi } from "@/lib/api/providers";
+import { VIEW_STORAGE_KEY } from "@/lib/navigation";
 import {
   resetProviderState,
   setCurrentProviderId,
@@ -230,6 +231,11 @@ const renderApp = (AppComponent: ComponentType) => {
 describe("App integration with MSW", () => {
   beforeEach(() => {
     resetProviderState();
+    setSettings({
+      firstRunNoticeConfirmed: true,
+      newLayoutNoticeConfirmed: true,
+      whatsNewSeenVersion: "test",
+    });
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
     skillsPanelMocks.initialViews = [];
@@ -245,7 +251,7 @@ describe("App integration with MSW", () => {
     };
     windowMocks.onResized.mockImplementation(listen);
     windowMocks.onScaleChanged.mockImplementation(listen);
-    localStorage.removeItem("cc-switch-last-view");
+    localStorage.setItem(VIEW_STORAGE_KEY, "providers");
     localStorage.removeItem("cc-switch-last-app");
   });
 
@@ -882,7 +888,9 @@ describe("App integration with MSW", () => {
     await waitFor(() =>
       expect(toastErrorMock).toHaveBeenCalledWith(
         "notifications.removeFromConfigFailed",
-        expect.objectContaining({ description: "kimi.error.defaultModelInUse" }),
+        expect.objectContaining({
+          description: "kimi.error.defaultModelInUse",
+        }),
       ),
     );
     await waitFor(() =>

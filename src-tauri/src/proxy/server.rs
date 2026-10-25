@@ -18,6 +18,7 @@ use super::{
     ProxyError,
 };
 use crate::database::Database;
+use crate::services::UsageCache;
 use axum::{
     extract::DefaultBodyLimit,
     routing::{any, get, post},
@@ -48,6 +49,8 @@ pub struct ProxyState {
     pub app_handle: Option<tauri::AppHandle>,
     /// 故障转移切换管理器
     pub failover_manager: Arc<FailoverSwitchManager>,
+    /// Last successful quota snapshots, shared with provider/dashboard queries.
+    pub usage_cache: Arc<UsageCache>,
 }
 
 /// 代理HTTP服务器
@@ -68,10 +71,20 @@ impl ProxyState {
 }
 
 impl ProxyServer {
+    #[cfg(test)]
     pub fn new(
         config: ProxyConfig,
         db: Arc<Database>,
         app_handle: Option<tauri::AppHandle>,
+    ) -> Self {
+        Self::new_with_usage_cache(config, db, app_handle, Arc::new(UsageCache::new()))
+    }
+
+    pub fn new_with_usage_cache(
+        config: ProxyConfig,
+        db: Arc<Database>,
+        app_handle: Option<tauri::AppHandle>,
+        usage_cache: Arc<UsageCache>,
     ) -> Self {
         // 创建共享的 ProviderRouter（熔断器状态将跨所有请求保持）
         let provider_router = Arc::new(ProviderRouter::new(db.clone()));
@@ -89,6 +102,7 @@ impl ProxyServer {
             codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
             app_handle,
             failover_manager,
+            usage_cache,
         };
 
         Self {
