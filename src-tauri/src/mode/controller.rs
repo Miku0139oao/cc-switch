@@ -1956,18 +1956,25 @@ pub async fn record_failover_route(
     let Some(target) = provider(state, app, provider_id)? else {
         return Err(format!("供应商不存在: {provider_id}"));
     };
-    commit_state(
-        state,
-        app,
-        &PendingTarget {
-            state: Some(ModeState {
-                proxy_route: Some(provider_id.to_string()),
-                ..mode
-            }),
-            ..PendingTarget::default()
-        },
-    )?;
-    state.proxy_service.set_active_target(app, &target).await;
+    // 自动故障转移也要把新路由绑的账号换进默认登录：否则客户端仍拿旧账号的 OAuth，
+    // 请求会打到失败的旧订阅上。写路由失败时换回。
+    let new_state = ModeState {
+        proxy_route: Some(provider_id.to_string()),
+        ..mode
+    };
+    crate::services::provider::claude_official::with_route_login_switch(app, &target, async {
+        commit_state(
+            state,
+            app,
+            &PendingTarget {
+                state: Some(new_state),
+                ..PendingTarget::default()
+            },
+        )?;
+        state.proxy_service.set_active_target(app, &target).await;
+        Ok::<(), String>(())
+    })
+    .await?;
     Ok(true)
 }
 
@@ -3425,6 +3432,62 @@ mod mode_tests {
         assert_eq!(in_use(&state, &AppType::Claude).as_deref(), Some("b"));
         assert_eq!(direct(&state, &AppType::Claude).as_deref(), Some("a"));
         exit(&state, &AppType::Claude).await.expect("exit");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn failover_to_a_bound_official_card_uses_the_login_switch() {
+        use crate::provider::{AuthBinding, AuthBindingSource, ProviderMeta};
+        use crate::services::provider::claude_official::ROUTE_LOGIN_SWITCH_TARGETS;
+
+        let _home = Home::new();
+        seed_settings(USER_SETTINGS);
+        let mut official = Provider::with_id(
+            "bound-official-failover".into(),
+            "Bound Official".into(),
+            json!({ "env": {} }),
+            None,
+        );
+        official.category = Some("official".into());
+        official.meta = Some(ProviderMeta {
+            auth_binding: Some(AuthBinding {
+                source: AuthBindingSource::ManagedAccount,
+                auth_provider: Some("claude_official".into()),
+                account_id: Some("acct".into()),
+            }),
+            ..Default::default()
+        });
+        let state = state_with(
+            AppType::Claude,
+            &[claude("a", "https://a.example", json!({})), official],
+            "a",
+        )
+        .await;
+        enter(&state, &AppType::Claude, false).await.expect("enter");
+
+        let before = ROUTE_LOGIN_SWITCH_TARGETS
+            .lock()
+            .expect("route login switch log")
+            .len();
+        assert!(
+            record_failover_route(&state, &AppType::Claude, "bound-official-failover")
+                .await
+                .expect("record failover")
+        );
+        let targets = ROUTE_LOGIN_SWITCH_TARGETS
+            .lock()
+            .expect("route login switch log");
+        assert!(
+            targets[before..]
+                .iter()
+                .any(|id| id == "bound-official-failover"),
+            "failover must go through the route login switch"
+        );
+        drop(targets);
+        assert_eq!(
+            in_use(&state, &AppType::Claude).as_deref(),
+            Some("bound-official-failover")
+        );
     }
 
     #[tokio::test]
