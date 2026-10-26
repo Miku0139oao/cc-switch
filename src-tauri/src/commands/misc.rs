@@ -2506,6 +2506,16 @@ fn merge_path_segments_win(parts: &[&str]) -> String {
 /// 单探兜底 (`scan_cli_version`) 与全量枚举 (`enumerate_tool_installations`) 共用，
 /// 确保两条路径看到的是同一组安装位置。
 fn build_tool_search_paths(tool: &str) -> Vec<std::path::PathBuf> {
+    build_tool_search_paths_with(tool, effective_path_os())
+}
+
+/// Same as [`build_tool_search_paths`], but with an explicit PATH. Tests pass
+/// `None` so the host machine's PATH cannot leak install dirs (Codex, bun, …)
+/// into every tool's search set.
+fn build_tool_search_paths_with(
+    tool: &str,
+    path_env: Option<std::ffi::OsString>,
+) -> Vec<std::path::PathBuf> {
     let home = dirs::home_dir().unwrap_or_default();
 
     // 常见的安装路径（原生安装优先）
@@ -2691,7 +2701,6 @@ fn build_tool_search_paths(tool: &str) -> Vec<std::path::PathBuf> {
         }
     }
 
-    let path_env = effective_path_os();
     extend_from_cli_path_env(&mut search_paths, path_env);
     search_paths.into_iter().collect()
 }
@@ -10175,7 +10184,7 @@ mod tests {
         // dropped them (regression guard for #6061 / #6278 / #6047).
         let local_data = dirs::data_local_dir().expect("LOCALAPPDATA should resolve");
 
-        let codex_paths = build_tool_search_paths("codex");
+        let codex_paths = build_tool_search_paths_with("codex", None);
         assert!(codex_paths.contains(
             &local_data
                 .join("Programs")
@@ -10184,11 +10193,11 @@ mod tests {
                 .join("bin")
         ));
 
-        let claude_paths = build_tool_search_paths("claude");
+        let claude_paths = build_tool_search_paths_with("claude", None);
         assert!(claude_paths.contains(&local_data.join("Programs").join("claude")));
 
         // The standalone Codex dir is codex-specific; it must not pollute other tools.
-        assert!(!build_tool_search_paths("gemini").contains(
+        assert!(!build_tool_search_paths_with("gemini", None).contains(
             &local_data
                 .join("Programs")
                 .join("OpenAI")
@@ -10203,9 +10212,9 @@ mod tests {
         // omp is reported as not installed and updates lose their anchor.
         let home = dirs::home_dir().expect("home should resolve");
         let bun_bin = home.join(".bun").join("bin");
-        assert!(build_tool_search_paths("omp").contains(&bun_bin));
+        assert!(build_tool_search_paths_with("omp", None).contains(&bun_bin));
         // Other Bun-installable tools keep their previous search set.
-        assert!(!build_tool_search_paths("gemini").contains(&bun_bin));
+        assert!(!build_tool_search_paths_with("gemini", None).contains(&bun_bin));
     }
 
     #[cfg(target_os = "windows")]
