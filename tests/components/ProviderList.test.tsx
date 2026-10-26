@@ -202,7 +202,9 @@ describe("ProviderList Component", () => {
         queueMove: vi.fn(),
         stackAdd: vi.fn(),
         stackRemove: vi.fn(),
+        stackMove: vi.fn(),
         stackSetDefault: vi.fn(),
+        stackReorder: vi.fn(),
       },
       ...overrides,
     };
@@ -329,6 +331,46 @@ describe("ProviderList Component", () => {
     ).toBeInTheDocument();
     expect(screen.getByTestId("queueRemove-b")).toBeInTheDocument();
     expect(screen.getByTestId("queueAdd-a")).toBeInTheDocument();
+  });
+
+  it("groups global providers before same-named agent providers in the stack", () => {
+    const local = createProvider({
+      id: "codex-local-quickrouter",
+      name: "Quickrouter",
+    });
+    const universal = createProvider({
+      id: "universal-codex-uuid",
+      name: "Quickrouter",
+    });
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [local, universal],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        {...baseProps}
+        providers={{ [local.id]: local, [universal.id]: universal }}
+        appId="codex"
+        switchMode={switchMode({ active: "stack", view: "stack" })}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", {
+        name: "providerCard.section.globalAvailable",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        name: "providerCard.section.agentAvailable",
+      }),
+    ).toBeInTheDocument();
+    expect(lastProps(universal.id)?.presentation.chips).toEqual([
+      expect.objectContaining({ key: "global" }),
+    ]);
+    expect(lastProps(local.id)?.presentation.chips).toEqual([]);
   });
 
   it("uses the additive layout for apps that keep several providers", async () => {

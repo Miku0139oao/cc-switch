@@ -11,6 +11,7 @@ import {
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { http, HttpResponse } from "msw";
 import { providersApi } from "@/lib/api/providers";
+import { VIEW_STORAGE_KEY } from "@/lib/navigation";
 import {
   resetProviderState,
   setCurrentProviderId,
@@ -230,6 +231,11 @@ const renderApp = (AppComponent: ComponentType) => {
 describe("App integration with MSW", () => {
   beforeEach(() => {
     resetProviderState();
+    setSettings({
+      firstRunNoticeConfirmed: true,
+      newLayoutNoticeConfirmed: true,
+      whatsNewSeenVersion: "test",
+    });
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
     skillsPanelMocks.initialViews = [];
@@ -245,7 +251,7 @@ describe("App integration with MSW", () => {
     };
     windowMocks.onResized.mockImplementation(listen);
     windowMocks.onScaleChanged.mockImplementation(listen);
-    localStorage.removeItem("cc-switch-last-view");
+    localStorage.setItem(VIEW_STORAGE_KEY, "providers");
     localStorage.removeItem("cc-switch-last-app");
   });
 
@@ -304,7 +310,9 @@ describe("App integration with MSW", () => {
 
     expect(toastErrorMock).not.toHaveBeenCalled();
     expect(toastSuccessMock).toHaveBeenCalled();
-  }, 10_000);
+    // 這支整合測試在閒置機器上就要 9–10 秒，原本的 10 秒上限會間歇性逾時；
+    // 給 30 秒，避免整包測試並行時因資源競爭誤判。
+  }, 30_000);
 
   it("refreshes the route pointer when the proxy fails over to another provider", async () => {
     let routeProviderId = "claude-1";
@@ -882,7 +890,9 @@ describe("App integration with MSW", () => {
     await waitFor(() =>
       expect(toastErrorMock).toHaveBeenCalledWith(
         "notifications.removeFromConfigFailed",
-        expect.objectContaining({ description: "kimi.error.defaultModelInUse" }),
+        expect.objectContaining({
+          description: "kimi.error.defaultModelInUse",
+        }),
       ),
     );
     await waitFor(() =>

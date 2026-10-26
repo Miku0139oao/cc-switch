@@ -199,6 +199,29 @@ impl Database {
             FOREIGN KEY (provider_id, app_type) REFERENCES providers(id, app_type) ON DELETE CASCADE
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
 
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS stack_fallback_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                logical_model TEXT NOT NULL,
+                attempt_index INTEGER NOT NULL,
+                failed_provider_id TEXT NOT NULL,
+                next_provider_id TEXT NOT NULL,
+                next_model TEXT NOT NULL,
+                error_class TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_stack_fallback_created
+             ON stack_fallback_events(created_at DESC)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
         // 10. Proxy Request Logs 表
         // pricing_model = 写入时实际用于计价的模型名（pricing_model_source 解析结果），
         // 回填按它重算；NULL 表示 v11 之前的历史行，'' 表示未计价的错误行。
@@ -619,6 +642,32 @@ impl Database {
                             )?;
                         }
                         Self::set_user_version(conn, 23)?;
+                    }
+                    23 => {
+                        log::info!("迁移数据库从 v23 到 v24（聚合模型 fallback 事件）");
+                        conn.execute(
+                            "CREATE TABLE IF NOT EXISTS stack_fallback_events (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                session_id TEXT NOT NULL,
+                                app_type TEXT NOT NULL,
+                                logical_model TEXT NOT NULL,
+                                attempt_index INTEGER NOT NULL,
+                                failed_provider_id TEXT NOT NULL,
+                                next_provider_id TEXT NOT NULL,
+                                next_model TEXT NOT NULL,
+                                error_class TEXT NOT NULL,
+                                created_at INTEGER NOT NULL
+                            )",
+                            [],
+                        )
+                        .map_err(|e| AppError::Database(e.to_string()))?;
+                        conn.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_stack_fallback_created
+                             ON stack_fallback_events(created_at DESC)",
+                            [],
+                        )
+                        .map_err(|e| AppError::Database(e.to_string()))?;
+                        Self::set_user_version(conn, 24)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(

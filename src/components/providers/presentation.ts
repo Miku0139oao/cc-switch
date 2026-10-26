@@ -21,6 +21,7 @@ export type ChipTone =
   | "direct"
   | "route"
   | "stack"
+  | "global"
   | "success"
   | "warning"
   | "danger";
@@ -86,6 +87,10 @@ export interface ProviderSection {
   items: { provider: Provider; presentation: CardPresentation }[];
 }
 
+export function isUniversalProvider(provider: Pick<Provider, "id">): boolean {
+  return provider.id.startsWith("universal-");
+}
+
 /** 走路由时不能用的官方订阅（Codex 官方账号可以，靠客户端自己的登录）。 */
 export function blockedFromRouting(app: AppId, provider: Provider): boolean {
   return (
@@ -138,6 +143,10 @@ export interface SwitchModeInput {
   queue: string[];
   /** 聚合名单（含默认那家）：id → 发布的模型数 */
   stackMembers: Map<string, number>;
+  /** 聚合成员的持久化顺序；未传时退回 Map 的插入顺序。 */
+  stackOrder?: string[];
+  /** 未過濾的完整名單：搜尋只決定畫哪些卡，不能讓「預設供應商」看起來消失。 */
+  allProviders?: Provider[];
   /** 需要路由的原因（悬停「需要路由」时的说明） */
   routingReason: (provider: Provider) => string;
   serviceRunning: boolean;
@@ -151,7 +160,10 @@ export interface SwitchModeInput {
     queueMove: (provider: Provider, delta: -1 | 1) => void;
     stackAdd: (provider: Provider) => void;
     stackRemove: (provider: Provider) => void;
+    stackMove: (provider: Provider, delta: -1 | 1) => void;
     stackSetDefault: (provider: Provider) => void;
+    /** 聚合名單拖曳：傳入非預設成員的新順序 */
+    stackReorder: (providerIds: string[]) => void;
   };
 }
 
@@ -198,12 +210,19 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
     failoverOn,
     queue,
     stackMembers,
+    stackOrder,
     actions,
   } = input;
   // 早期绑定托管账号的 Codex 官方卡没有 category，按身份认
   const official = (p: Provider) => isOfficialAccount(app, p);
 
   const chip = {
+    global: (): CardChip => ({
+      key: "global",
+      label: t("providerCard.chip.global"),
+      tone: "global",
+      title: t("providerCard.chip.globalHint"),
+    }),
     official: (): CardChip => ({
       key: "official",
       label: t("providerCard.chip.official"),
@@ -224,13 +243,18 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
       title: t("provider.directProviderHint"),
     }),
   };
+  const identityChips = (p: Provider): CardChip[] =>
+    isUniversalProvider(p) ? [chip.global()] : [];
   const base = (p: Provider) => {
-    const chips: CardChip[] = [];
+    const chips = identityChips(p);
     if (official(p)) chips.push(chip.official());
     if (providerNeedsRouting(app, p)) chips.push(chip.needsRoute(p));
     return chips;
   };
-  const officialOnly = (p: Provider) => (official(p) ? [chip.official()] : []);
+  const officialOnly = (p: Provider) => [
+    ...identityChips(p),
+    ...(official(p) ? [chip.official()] : []),
+  ];
   const blocked = (p: Provider, label: string, reason: string) => ({
     provider: p,
     presentation: {
@@ -380,6 +404,7 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
                   label: `P${index + 1}`,
                   tone: "outline" as const,
                 },
+                ...identityChips(p),
               ],
               showHealth: input.serviceRunning,
               buttons: [
@@ -475,12 +500,15 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
 
   // view === "stack"
   const on = active === "stack";
+  // 預設那家用完整名單判斷：搜尋把它的卡片藏起來時，不能誤判成「還沒有預設供應商」。
+  const allProviders = input.allProviders ?? providers;
   const defaultId = (() => {
     const candidate = on ? routeId : (routeId ?? directId);
-    const p = providers.find((x) => x.id === candidate);
+    const p = allProviders.find((x) => x.id === candidate);
     return p && !blockedFromRouting(app, p) ? p.id : null;
   })();
   const defaultProvider = providers.find((p) => p.id === defaultId);
+  const defaultHidden = defaultId !== null && defaultProvider === undefined;
   // 行上的主操作只有名单的添加 / 移除；「设为默认」在「更多」菜单里：进了聚合当场生效，
   // 在直连时只记下选择（切换时的确认框里还能改）。正在路由时不能点：默认和路由目标是同一个
   // 指针，改了就是当场换路由
@@ -495,9 +523,12 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
       onSelect: () => actions.stackSetDefault(p),
     },
   ];
-  const memberIds = providers
-    .filter((p) => p.id !== defaultId && stackMembers.has(p.id))
-    .map((p) => p.id);
+  const orderedMemberIds = (
+    stackOrder?.length ? stackOrder : Array.from(stackMembers.keys())
+  ).filter((id) => id !== defaultId && stackMembers.has(id));
+  const visibleMemberIds = orderedMemberIds.filter((id) =>
+    providers.some((provider) => provider.id === id),
+  );
   const modelsChip = (p: Provider): CardChip => {
     const count = stackMembers.get(p.id) ?? 0;
     return count > 0
@@ -520,6 +551,7 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
           provider: defaultProvider,
           presentation: {
             tone: on ? ("stack" as const) : undefined,
+            showHealth: input.serviceRunning,
             status: on
               ? {
                   label: t("providerCard.status.currentDefault"),
@@ -543,13 +575,33 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
       ]
     : [];
 
-  const memberItems = memberIds.map((id) => {
+  const memberItems = visibleMemberIds.map((id) => {
     const p = providers.find((x) => x.id === id)!;
+    const priority = orderedMemberIds.indexOf(id);
     return {
       provider: p,
       presentation: {
-        chips: [modelsChip(p)],
+        showHealth: input.serviceRunning,
+        chips: [
+          {
+            key: "priority",
+            label: `P${priority + 1}`,
+            tone: "outline" as const,
+            title: t("providerCard.priority.tooltip", {
+              priority: priority + 1,
+            }),
+          },
+          ...identityChips(p),
+          modelsChip(p),
+        ],
         menuItems: setDefaultItems(p),
+        move: {
+          onUp: priority > 0 ? () => actions.stackMove(p, -1) : undefined,
+          onDown:
+            priority < orderedMemberIds.length - 1
+              ? () => actions.stackMove(p, 1)
+              : undefined,
+        },
         buttons: [
           {
             key: "remove",
@@ -562,7 +614,7 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
   });
 
   const availItems = providers
-    .filter((p) => p.id !== defaultId && !memberIds.includes(p.id))
+    .filter((p) => p.id !== defaultId && !orderedMemberIds.includes(p.id))
     .map((p) => {
       if (blockedFromRouting(app, p)) {
         return blocked(
@@ -571,7 +623,7 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
           t("providerCard.reason.noStack"),
         );
       }
-      if (official(p)) {
+      if (app === "codex" && official(p)) {
         return {
           provider: p,
           presentation: {
@@ -591,7 +643,7 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
       return {
         provider: p,
         presentation: {
-          chips: providerNeedsRouting(app, p) ? [chip.needsRoute(p)] : [],
+          chips: base(p),
           // 还没添加的也能直接设为默认：后端会把默认那家一起加进名单
           menuItems: setDefaultItems(p),
           buttons: [
@@ -605,7 +657,13 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
       };
     });
 
-  return [
+  const globalAvailItems = availItems.filter((item) =>
+    isUniversalProvider(item.provider),
+  );
+  const agentAvailItems = availItems.filter(
+    (item) => !isUniversalProvider(item.provider),
+  );
+  const sections: ProviderSection[] = [
     {
       key: "default",
       title: on
@@ -619,7 +677,9 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
             : "providerCard.section.stackDefaultHelp",
         ),
       },
-      emptyText: t("providerCard.section.stackNoDefault"),
+      emptyText: defaultHidden
+        ? t("providerCard.section.stackDefaultHidden")
+        : t("providerCard.section.stackNoDefault"),
       items: defaultItems,
     },
     {
@@ -628,12 +688,43 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
       emptyText: t("providerCard.section.stackEmpty"),
       items: memberItems,
     },
-    {
-      key: "available",
-      title: t("providerCard.section.available", { count: availItems.length }),
-      items: availItems,
-    },
   ];
+
+  if (globalAvailItems.length > 0) {
+    sections.push({
+      key: "globalAvailable",
+      title: t("providerCard.section.globalAvailable", {
+        count: globalAvailItems.length,
+      }),
+      help: {
+        title: t("providerCard.section.globalAvailableHelpTitle"),
+        body: t("providerCard.section.globalAvailableHelp"),
+      },
+      items: globalAvailItems,
+    });
+  }
+
+  if (agentAvailItems.length > 0) {
+    sections.push({
+      key: "available",
+      title: t(
+        globalAvailItems.length > 0
+          ? "providerCard.section.agentAvailable"
+          : "providerCard.section.available",
+        { count: agentAvailItems.length },
+      ),
+      help:
+        globalAvailItems.length > 0
+          ? {
+              title: t("providerCard.section.agentAvailableHelpTitle"),
+              body: t("providerCard.section.agentAvailableHelp"),
+            }
+          : undefined,
+      items: agentAvailItems,
+    });
+  }
+
+  return sections;
 }
 
 // ─── 启动器式应用（Antigravity）──────────────────────────────────────────────

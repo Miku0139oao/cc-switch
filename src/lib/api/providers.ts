@@ -4,6 +4,7 @@ import type {
   Provider,
   ProviderMeta,
   UniversalProvider,
+  UniversalProviderStatus,
   UniversalProvidersMap,
 } from "@/types";
 import type { AppId } from "./types";
@@ -314,5 +315,14 @@ export const universalProvidersApi = {
    */
   async sync(id: string): Promise<boolean> {
     return await invoke("sync_universal_provider", { id });
+  },
+
+  /** 所有全域供應商在各 Agent 的落地狀態（存在／使用中／聚合／佇列）。 */
+  async getStatuses(): Promise<UniversalProviderStatus[]> {
+    return await invoke("get_universal_provider_statuses");
+  },
+
+  async getStatus(id: string): Promise<UniversalProviderStatus | null> {
+    return await invoke("get_universal_provider_status", { id });
   },
 };

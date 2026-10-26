@@ -26,6 +26,24 @@ export function useProviderHealth(
 }
 
 /**
+ * 讀取指定 Provider 的熔斷器即時狀態（只在代理執行時有值）。
+ * 後端以前永遠回 None；現在回傳執行中的 Closed / Open / HalfOpen。
+ */
+export function useCircuitBreakerStats(
+  providerId: string,
+  appType: string,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ["circuitBreakerStats", providerId, appType],
+    queryFn: () => failoverApi.getCircuitBreakerStats(providerId, appType),
+    enabled: enabled && !!providerId && !!appType,
+    refetchInterval: enabled ? 5000 : false,
+    retry: false,
+  });
+}
+
+/**
  * 重置熔断器
  *
  * 重置后后端会检查是否应该切回优先级更高的供应商，
@@ -46,6 +64,13 @@ export function useResetCircuitBreaker() {
       // 刷新健康状态
       queryClient.invalidateQueries({
         queryKey: ["providerHealth", variables.providerId, variables.appType],
+      });
+      queryClient.invalidateQueries({
+        queryKey: [
+          "circuitBreakerStats",
+          variables.providerId,
+          variables.appType,
+        ],
       });
       // 刷新供应商列表（因为可能发生了自动恢复切换）
       queryClient.invalidateQueries({
@@ -80,18 +105,6 @@ export function useUpdateCircuitBreakerConfig() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["circuitBreakerConfig"] });
     },
-  });
-}
-
-/**
- * 获取熔断器统计信息
- */
-export function useCircuitBreakerStats(providerId: string, appType: string) {
-  return useQuery({
-    queryKey: ["circuitBreakerStats", providerId, appType],
-    queryFn: () => failoverApi.getCircuitBreakerStats(providerId, appType),
-    enabled: !!providerId && !!appType,
-    refetchInterval: 5000, // 每 5 秒刷新一次
   });
 }
 

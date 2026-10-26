@@ -42,6 +42,7 @@ use super::contract;
 use super::current::{self, Purpose};
 use super::operation;
 use super::stack::{self, StackModel, StackView};
+use super::state as live_state;
 use super::state::{op, Contract, Mode, ModeState, PendingTarget, StackState};
 
 /// 有路由模式的应用（[`AppType::has_route_mode`]）。Claude Desktop 也在内：它经同一个路由
@@ -833,22 +834,7 @@ async fn enter_locked(
         rewrite_label(rewritten)
     );
     state.proxy_service.set_active_target(app, &route).await;
-    warn_if_official_route(state, app, &route).await;
     Ok(())
-}
-
-async fn warn_if_official_route(state: &AppState, app: &AppType, route: &Provider) {
-    if route.category.as_deref() == Some("official")
-        && !crate::services::provider::official_provider_supports_proxy_takeover(app, route)
-    {
-        state
-            .proxy_service
-            .emit(
-                "proxy-official-warning",
-                json!({ "appType": app.as_str(), "providerName": route.name }),
-            )
-            .await;
-    }
 }
 
 /// 退出代理模式：客户端写回直连指针的供应商，路由保留。
@@ -1189,16 +1175,10 @@ pub async fn set_route(
     })
 }
 
-/// 代理模式下不能切到不支持代理的官方供应商（Codex 官方账号走客户端自己的登录，除外）。
+/// Official subscriptions are proxyable too. Keep this guard as a single
+/// transition hook for future account-specific preflight checks.
 pub fn reject_unsupported_official(app: &AppType, provider: &Provider) -> Result<(), String> {
-    if provider.category.as_deref() == Some("official")
-        && !crate::services::provider::official_provider_supports_proxy_takeover(app, provider)
-    {
-        return Err(
-            "代理模式下不能切换到官方供应商 (Cannot switch to an official provider in proxy mode)"
-                .to_string(),
-        );
-    }
+    let _ = (app, provider);
     Ok(())
 }
 
@@ -1221,17 +1201,14 @@ impl StackWriteError {
     }
 }
 
-/// 能不能加进 Stack。不能是官方账号：Claude 官方订阅本来就不进代理；Codex 官方可以做路由，
-/// 但它靠客户端自己的登录做账号校验，不能当 Stack 目标。Codex 的行还要能解析：它的模型要
-/// 写进目录。
+/// Codex official rows validate the inbound account and therefore remain
+/// default-only. Other official subscriptions can be ordinary Stack members;
+/// their adapter is responsible for using the correct account credentials.
 fn check_stack_member(app: &AppType, provider: &Provider) -> Result<(), String> {
-    let official = match app {
-        AppType::Codex => codex_direct::is_official(provider),
-        _ => provider.category.as_deref() == Some("official"),
-    };
-    if official {
+    if matches!(app, AppType::Codex) && codex_direct::is_official(provider) {
         return Err(
-            "官方账号不能加入聚合 (An official account cannot join the aggregation)".to_string(),
+            "Codex 官方账号只能作为聚合默认供应商，不能加入成员链 (A Codex official account can only be the aggregation default)"
+                .to_string(),
         );
     }
     match app {
@@ -1301,6 +1278,95 @@ pub async fn set_stack_member(
     })
 }
 
+/// Reorder the non-default Stack members. The default/route provider keeps its
+/// existing slot; `provider_ids` must be a permutation of every other member.
+pub async fn reorder_stack_members(
+    state: &AppState,
+    app: &AppType,
+    provider_ids: Vec<String>,
+) -> Result<(), StackWriteError> {
+    if !stack::supports_stack(app) {
+        return Err(StackWriteError::unchanged(format!(
+            "{} 不支持聚合模式 ({} does not support Aggregation mode)",
+            app.as_str(),
+            app.as_str()
+        )));
+    }
+    let _guard = lock_settled(state, app)
+        .await
+        .map_err(|error| StackWriteError::unchanged(error.to_string()))?;
+    if let Err(message) = reorder_stack_members_locked(state, app, provider_ids).await {
+        let partial = operation::pending_published(&DeviceStore::for_device(), app.as_str())
+            .unwrap_or_else(|error| {
+                log::warn!("读取 {} 的写前意图失败: {error}", app.as_str());
+                None
+            })
+            == Some(true);
+        return Err(StackWriteError { partial, message });
+    }
+    Ok(())
+}
+
+async fn reorder_stack_members_locked(
+    state: &AppState,
+    app: &AppType,
+    provider_ids: Vec<String>,
+) -> Result<(), String> {
+    let current = settled_stack(app)?;
+    let route = current::mode_state(app).proxy_route;
+    let expected: Vec<&str> = current
+        .members
+        .iter()
+        .filter(|id| Some(id.as_str()) != route.as_deref())
+        .map(String::as_str)
+        .collect();
+    let mut requested = provider_ids;
+    let mut unique = std::collections::HashSet::with_capacity(requested.len());
+    if requested.len() != expected.len()
+        || requested
+            .iter()
+            .any(|id| !expected.contains(&id.as_str()) || !unique.insert(id.clone()))
+    {
+        return Err("聚合成员顺序必须包含每个非默认成员各一次".to_string());
+    }
+
+    let mut next = current.clone();
+    let mut requested = requested.drain(..);
+    next.members = current
+        .members
+        .iter()
+        .map(|id| {
+            if Some(id.as_str()) == route.as_deref() {
+                id.clone()
+            } else {
+                requested
+                    .next()
+                    .expect("provider count was validated above")
+            }
+        })
+        .collect();
+    if next == current {
+        return Ok(());
+    }
+
+    match attached_route(state, app)? {
+        Some((mode, route)) => {
+            let live_now = LiveNow::of(state, app, &mode)?;
+            write_proxy(state, app, op::STACK, &route, &live_now, mode, Some(next))
+                .await
+                .map(|_| ())
+        }
+        None => commit_state(
+            state,
+            app,
+            &PendingTarget {
+                stack: Some(next),
+                ..PendingTarget::default()
+            },
+        ),
+    }
+}
+
 async fn set_stack_member_locked(
     state: &AppState,
     app: &AppType,
@@ -1326,12 +1392,14 @@ async fn set_stack_member_locked(
             );
         }
         next.members.retain(|id| id != provider_id);
+        next.prune_fallbacks();
+        next.balance_weights.remove(provider_id);
     }
     if next == current {
         return Ok(());
     }
 
-    match attached_route(state, app)? {
+    let result = match attached_route(state, app)? {
         Some((mode, route)) => {
             let live_now = LiveNow::of(state, app, &mode)?;
             write_proxy(state, app, op::STACK, &route, &live_now, mode, Some(next))
@@ -1346,7 +1414,20 @@ async fn set_stack_member_locked(
                 ..PendingTarget::default()
             },
         ),
+    };
+    if result.is_ok() && !enabled {
+        if let Err(error) = live_state::clear_balanced_sessions_for_provider(
+            &DeviceStore::for_device(),
+            app.as_str(),
+            provider_id,
+        ) {
+            log::warn!(
+                "[{}] failed to prune balancing sessions for removed provider {provider_id}: {error}",
+                app.as_str()
+            );
+        }
     }
+    result
 }
 
 /// Stack 模式的状态、名单里的每一家和它发布的模型 id（给前端）。
@@ -1371,15 +1452,243 @@ pub fn stack_views(state: &AppState, app: &AppType) -> Result<StackView, String>
         AppType::Codex => codex_direct::stack_subagent_choices(&members),
         _ => Vec::new(),
     };
+    let mut fallbacks = stack.fallbacks.clone();
+    fallbacks.retain(|model, targets| {
+        targets.retain(|target| stack.is_member(&target.provider_id));
+        !targets.is_empty()
+            && members
+                .iter()
+                .any(|member| member.model_ids.contains(model))
+    });
+    let member_views = stack::member_views(app, &members);
+    let mut effective_fallbacks = std::collections::BTreeMap::new();
+    let mut balance_pools: std::collections::BTreeMap<
+        String,
+        std::collections::HashSet<(String, String)>,
+    > = std::collections::BTreeMap::new();
+    for member in &member_views {
+        for model_id in &member.model_ids {
+            let Some(model) = member
+                .models
+                .iter()
+                .find(|model| model.id == model_id.as_str())
+            else {
+                continue;
+            };
+            let targets = stack::fallback_targets(
+                app,
+                &stack,
+                model_id,
+                &member.provider_id,
+                &model.upstream_model,
+                &members,
+            );
+            let pool = balance_pools.entry(model_id.clone()).or_default();
+            pool.insert((
+                normalize_balance_model(&member.provider_id),
+                normalize_balance_model(&model.upstream_model),
+            ));
+            pool.extend(targets.iter().map(|target| {
+                (
+                    normalize_balance_model(&target.provider_id),
+                    normalize_balance_model(&target.upstream_model),
+                )
+            }));
+            if !targets.is_empty() {
+                effective_fallbacks.insert(model_id.clone(), targets);
+            }
+        }
+    }
+    let balanced_session_count = prune_invalid_balanced_sessions(app, &balance_pools);
+    let balance_weights = stack
+        .members
+        .iter()
+        .map(|provider_id| (provider_id.clone(), stack.weight_for(provider_id)))
+        .collect();
     Ok(StackView {
         active: mode.is_proxy() && stack.enabled,
-        members: stack::member_views(app, &members),
+        members: member_views,
         notice,
         notice_reasons,
         stale_clients: None,
         stale_revision: None,
         subagent_models,
+        fallbacks,
+        effective_fallbacks,
+        balance_strategy: stack.balance_strategy,
+        balance_weights,
+        balanced_session_count,
     })
+}
+
+fn normalize_balance_model(model: &str) -> String {
+    crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(model)
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn prune_invalid_balanced_sessions(
+    app: &AppType,
+    pools: &std::collections::BTreeMap<String, std::collections::HashSet<(String, String)>>,
+) -> usize {
+    let store = DeviceStore::for_device();
+    let sessions = live_state::balanced_sessions(&store, app.as_str()).unwrap_or_default();
+    let mut valid = 0usize;
+    let mut changed = false;
+    for models in sessions.values() {
+        for (logical_model, target) in models {
+            let present = pools.get(logical_model).is_some_and(|pool| {
+                pool.contains(&(
+                    normalize_balance_model(&target.provider_id),
+                    normalize_balance_model(&target.upstream_model),
+                ))
+            });
+            if present {
+                valid += 1;
+            } else {
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        let _ = live_state::update_if_changed(&store, |live| {
+            if let Some(app_state) = live.apps.get_mut(app.as_str()) {
+                app_state.balanced_sessions.retain(|_, models| {
+                    models.retain(|logical_model, target| {
+                        pools.get(logical_model).is_some_and(|pool| {
+                            pool.contains(&(
+                                normalize_balance_model(&target.provider_id),
+                                normalize_balance_model(&target.upstream_model),
+                            ))
+                        })
+                    });
+                    !models.is_empty()
+                });
+            }
+        });
+    }
+    valid
+}
+
+/// Replace one aggregated model's explicit fallback chain. These chains are
+/// model-scoped and never mutate the route-mode failover queue or global route.
+pub async fn set_stack_fallback_chain(
+    state: &AppState,
+    app: &AppType,
+    model_id: &str,
+    targets: Vec<crate::mode::state::StackFallbackTarget>,
+) -> Result<(), String> {
+    if !stack::supports_stack(app) {
+        return Err(format!("{} 不支持聚合模式", app.as_str()));
+    }
+    let _guard = lock_settled(state, app).await.map_err(err)?;
+    let current = settled_stack(app)?;
+    let members = stack::members(
+        &state.db,
+        app,
+        &current,
+        current::mode_state(app).proxy_route.as_deref(),
+    )
+    .map_err(err)?;
+    let inventory = stack::member_views(app, &members);
+    if !inventory
+        .iter()
+        .any(|member| member.models.iter().any(|model| model.id == model_id))
+    {
+        return Err(format!("聚合模型不存在: {model_id}"));
+    }
+
+    let mut next = current.clone();
+    let mut seen = std::collections::HashSet::new();
+    let mut normalized = Vec::with_capacity(targets.len());
+    for target in targets {
+        let provider_id = target.provider_id.trim();
+        let upstream_model = target.upstream_model.trim();
+        if !current.is_member(provider_id) {
+            return Err(format!("fallback 供应商不在聚合名单中: {provider_id}"));
+        }
+        if upstream_model.is_empty() {
+            return Err("fallback 模型不能为空".to_string());
+        }
+        let pair = (provider_id.to_string(), upstream_model.to_string());
+        if !seen.insert(pair.clone()) {
+            return Err("fallback 目标不能重复".to_string());
+        }
+        normalized.push(crate::mode::state::StackFallbackTarget {
+            provider_id: pair.0,
+            upstream_model: pair.1,
+        });
+    }
+    if normalized.is_empty() {
+        next.fallbacks.remove(model_id);
+    } else {
+        next.fallbacks.insert(model_id.to_string(), normalized);
+    }
+    if next == current {
+        return Ok(());
+    }
+
+    match attached_route(state, app)? {
+        Some((mode, route)) => {
+            let live_now = LiveNow::of(state, app, &mode)?;
+            write_proxy(state, app, op::STACK, &route, &live_now, mode, Some(next))
+                .await
+                .map(|_| ())
+        }
+        None => commit_state(
+            state,
+            app,
+            &PendingTarget {
+                stack: Some(next),
+                ..PendingTarget::default()
+            },
+        ),
+    }
+}
+
+/// Change the App-level first-attempt policy without rewriting client config.
+pub async fn set_stack_balance_policy(
+    state: &AppState,
+    app: &AppType,
+    strategy: crate::mode::state::BalanceStrategy,
+    weights: std::collections::BTreeMap<String, u32>,
+) -> Result<(), String> {
+    if !stack::supports_stack(app) {
+        return Err(format!("{} 不支持聚合模式", app.as_str()));
+    }
+    let _guard = lock_settled(state, app).await.map_err(err)?;
+    let current = settled_stack(app)?;
+    for provider_id in weights.keys() {
+        if !current.is_member(provider_id) {
+            return Err(format!("平衡权重的供应商不在聚合名单中: {provider_id}"));
+        }
+    }
+    for (provider_id, weight) in &weights {
+        if !(crate::mode::state::MIN_BALANCE_WEIGHT..=crate::mode::state::MAX_BALANCE_WEIGHT)
+            .contains(weight)
+        {
+            return Err(format!(
+                "供应商 {provider_id} 的权重必须在 {} 到 {} 之间",
+                crate::mode::state::MIN_BALANCE_WEIGHT,
+                crate::mode::state::MAX_BALANCE_WEIGHT
+            ));
+        }
+    }
+    let mut next = current.clone();
+    next.balance_strategy = strategy;
+    next.balance_weights = weights;
+    if next != current {
+        commit_state(
+            state,
+            app,
+            &PendingTarget {
+                stack: Some(next),
+                ..PendingTarget::default()
+            },
+        )?;
+    }
+    stack_views(state, app)?;
+    Ok(())
 }
 
 /// [`stack_views`] 再加上 Codex 客户端是否可能缓存旧登录或模型列表（要读进程表，放到阻塞线程
@@ -2549,6 +2858,47 @@ mod mode_tests {
             }
             let _ = crate::settings::reload_settings();
         }
+    }
+
+    #[test]
+    #[serial]
+    fn balance_pruning_keeps_only_assignments_in_the_current_model_pool() {
+        let _home = Home::new();
+        let store = DeviceStore::for_device();
+        live_state::update(&store, |live| {
+            let sessions = &mut live
+                .apps
+                .entry("claude".into())
+                .or_default()
+                .balanced_sessions;
+            sessions.entry("thread-1".into()).or_default().extend([
+                (
+                    "model-live".into(),
+                    live_state::BalancedSession {
+                        provider_id: "a".into(),
+                        upstream_model: "model-a".into(),
+                    },
+                ),
+                (
+                    "model-removed".into(),
+                    live_state::BalancedSession {
+                        provider_id: "gone".into(),
+                        upstream_model: "old-model".into(),
+                    },
+                ),
+            ]);
+        })
+        .unwrap();
+        let mut pools = std::collections::BTreeMap::new();
+        pools.insert(
+            "model-live".to_string(),
+            std::collections::HashSet::from([("a".to_string(), "model-a".to_string())]),
+        );
+
+        assert_eq!(prune_invalid_balanced_sessions(&AppType::Claude, &pools), 1);
+        let sessions = live_state::balanced_sessions(&store, "claude").unwrap();
+        assert!(sessions["thread-1"].contains_key("model-live"));
+        assert!(!sessions["thread-1"].contains_key("model-removed"));
     }
 
     fn claude(id: &str, url: &str, extra: Value) -> Provider {
@@ -5778,6 +6128,42 @@ model_provider = "c"
 
     #[tokio::test]
     #[serial]
+    async fn reorder_stack_members_keeps_the_default_slot_and_updates_priority() {
+        let _home = Home::new();
+        seed_settings(USER_SETTINGS);
+        let state = state_with(AppType::Claude, &stack_rows(), "a").await;
+        enter_with_route(&state, &AppType::Claude, true, Some("a"))
+            .await
+            .expect("enter stack");
+        set_stack_member(&state, &AppType::Claude, "kimi", true)
+            .await
+            .expect("add kimi");
+        set_stack_member(&state, &AppType::Claude, "zhipu", true)
+            .await
+            .expect("add zhipu");
+
+        reorder_stack_members(
+            &state,
+            &AppType::Claude,
+            vec!["zhipu".to_string(), "kimi".to_string()],
+        )
+        .await
+        .expect("reorder");
+
+        let stack = stack_state();
+        assert_eq!(stack.members, vec!["a", "zhipu", "kimi"]);
+        let members = stack_views(&state, &AppType::Claude).unwrap().members;
+        assert_eq!(
+            members
+                .iter()
+                .map(|member| member.provider_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "zhipu", "kimi"]
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn a_users_own_model_discovery_switch_survives_switches_and_proxy_mode() {
         let _home = Home::new();
         let mut user: Value = serde_json::from_str(USER_SETTINGS).unwrap();
@@ -5980,13 +6366,21 @@ model_provider = "c"
         assert!(stack_state().is_empty());
         assert_back_to_user_settings();
 
-        // 不存在的、不能走代理的官方订阅：拒绝，记下的那家不变。
+        // 官方订阅也可走代理：只记下指针。不存在的供应商仍然拒绝。
         set_route(&state, &AppType::Claude, "missing")
             .await
             .expect_err("unknown provider");
         set_route(&state, &AppType::Claude, "official")
             .await
-            .expect_err("official subscription");
+            .expect("official subscription route");
+        assert_eq!(view().route_provider_id.as_deref(), Some("official"));
+        assert_eq!(view().direct_provider_id.as_deref(), Some("a"));
+        assert_eq!(in_use(&state, &AppType::Claude).as_deref(), Some("a"));
+        assert_back_to_user_settings();
+
+        set_route(&state, &AppType::Claude, "kimi")
+            .await
+            .expect("remember kimi again");
         assert_eq!(view().route_provider_id.as_deref(), Some("kimi"));
 
         // 进入聚合模式沿用记下的那家：它是默认，随之加入名单。
@@ -6710,22 +7104,22 @@ model_provider = "c"
 
     #[tokio::test]
     #[serial]
-    async fn official_accounts_cannot_be_stacked() {
+    async fn official_accounts_can_be_stacked() {
         let _home = Home::new();
         seed_settings(USER_SETTINGS);
         let mut official = claude("official", "https://api.anthropic.com", json!({}));
         official.category = Some("official".to_string());
         let rows = [claude("a", "https://a.example", json!({})), official];
         let state = state_with(AppType::Claude, &rows, "a").await;
-        let error = set_stack_member(&state, &AppType::Claude, "official", true)
+        set_stack_member(&state, &AppType::Claude, "official", true)
             .await
-            .expect_err("official");
-        assert!(!error.partial);
-        assert!(stack_state().is_empty());
+            .expect("official subscription");
+        assert!(stack_state().is_member("official"));
         let error = set_stack_member(&state, &AppType::Claude, "missing", true)
             .await
             .expect_err("missing");
         assert!(!error.partial);
+        assert!(stack_state().is_member("official"));
     }
 
     #[tokio::test]

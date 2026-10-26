@@ -11,6 +11,11 @@ import type {
   CodexDaemonRestartOutcome,
   AppModeView,
   StartupAttachFailure,
+  StackFallbackTarget,
+  BalanceStrategy,
+  AppCapabilities,
+  DashboardSnapshot,
+  StackFallbackEvent,
 } from "@/types/proxy";
 
 export const proxyApi = {
@@ -34,6 +39,14 @@ export const proxyApi = {
   // 获取代理服务器状态
   async getProxyStatus(): Promise<ProxyStatus> {
     return invoke("get_proxy_status");
+  },
+
+  async getAppCapabilities(): Promise<AppCapabilities[]> {
+    return invoke("get_app_capabilities");
+  },
+
+  async getDashboardSnapshot(): Promise<DashboardSnapshot> {
+    return invoke("get_dashboard_snapshot");
   },
 
   // ========== 接管状态 API ==========
@@ -96,6 +109,24 @@ export const proxyApi = {
     return invoke("get_proxy_stack", { appType });
   },
 
+  /** 最近的聚合失敗轉移事件（新的在前）。不給 appType 時讀所有應用。 */
+  async getStackFallbackEvents(
+    appType?: string,
+    limit = 50,
+  ): Promise<StackFallbackEvent[]> {
+    return invoke("get_stack_fallback_events", {
+      appType: appType ?? null,
+      limit,
+    });
+  },
+
+  /** 某個請求的聚合換家軌跡（依 session_id 關聯）。 */
+  async getStackFallbackEventsForRequest(
+    requestId: string,
+  ): Promise<StackFallbackEvent[]> {
+    return invoke("get_stack_fallback_events_for_request", { requestId });
+  },
+
   // 把一家加入或移出 Stack 模型（enabled 是目标值）。成功时返回客户端看不到或看不全 Stack 模型
   // 的提示；失败时抛出 ProxyStackWriteError
   async setProxyStackMember(
@@ -104,6 +135,38 @@ export const proxyApi = {
     enabled: boolean,
   ): Promise<ProxyStackNotice | null> {
     return invoke("set_proxy_stack_member", { appType, providerId, enabled });
+  },
+
+  // 已加入成员（不含默认）的 0..N 优先顺序；后端会保留默认成员原位置。
+  async reorderStackMembers(
+    appType: string,
+    providerIds: string[],
+  ): Promise<void> {
+    return invoke("reorder_stack_members", { appType, providerIds });
+  },
+
+  async setStackFallbackChain(
+    appType: string,
+    modelId: string,
+    targets: StackFallbackTarget[],
+  ): Promise<void> {
+    return invoke("set_stack_fallback_chain", {
+      appType,
+      modelId,
+      targets,
+    });
+  },
+
+  async setStackBalancePolicy(
+    appType: string,
+    strategy: BalanceStrategy,
+    weights: Record<string, number>,
+  ): Promise<void> {
+    return invoke("set_stack_balance_policy", {
+      appType,
+      strategy,
+      weights,
+    });
   },
 
   // Codex 聚合的模型被别的模型目录挡住时，改用 CC Switch 生成的目录（去掉指向别的文件的

@@ -479,9 +479,19 @@ requires_openai_auth = true`;
 
         {/* 应用启用 */}
         <div className="space-y-3">
-          <Label>
-            {t("universalProvider.enabledApps", { defaultValue: "启用的应用" })}
-          </Label>
+          <div>
+            <Label>
+              {t("universalProvider.availableAgents", {
+                defaultValue: "Available to agents",
+              })}
+            </Label>
+            <p className="m-0 mt-1 text-caption text-fg-2">
+              {t("universalProvider.availableAgentsHint", {
+                defaultValue:
+                  "The API key and endpoint are managed once. Each selected agent gets its own model mapping.",
+              })}
+            </p>
+          </div>
           <div className="flex flex-col gap-3">
             <div className="flex items-center justify-between rounded-lg border p-3">
               <div className="flex items-center gap-2">

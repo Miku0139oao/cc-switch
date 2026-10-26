@@ -89,6 +89,7 @@ import { OpenTerminalDialog } from "@/components/providers/OpenTerminalDialog";
 import { discardUnsavedChanges, hasUnsavedChanges } from "@/lib/unsavedChanges";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { AuthCenterPanel } from "@/components/settings/AuthCenterPanel";
+import { GlobalProvidersPage } from "@/components/providers/global/GlobalProvidersPage";
 import { AppsPage } from "@/components/apps/AppsPage";
 import {
   checkToolUpdatesInBackground,
@@ -120,6 +121,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { SessionManagerPage } from "@/components/sessions/SessionManagerPage";
+import { DashboardPage } from "@/components/dashboard/DashboardPage";
 import {
   useDisableCurrentOmo,
   useDisableCurrentOmoSlim,
@@ -179,6 +181,10 @@ function App() {
   const [isAddOpen, setIsAddOpen] = useState(false);
   // 供应商搜索面板：页头按钮和 ⌘F 都能打开；换应用或离开供应商页就收起
   const [providerSearchOpen, setProviderSearchOpen] = useState(false);
+  /** 從 Agent 頁的「管理全域供應商」進來時，要直接打開的那一家（universal id） */
+  const [globalProviderFocus, setGlobalProviderFocus] = useState<string | null>(
+    null,
+  );
   const [connectionStatusSlot, setConnectionStatusSlot] =
     useState<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -1457,6 +1463,17 @@ function App() {
     return null;
   };
 
+  // 子卡是 sync 出來的：編輯／刪除回到全域供應商頁，避免改了被下次同步覆蓋。
+  const handleManageGlobal = (provider: Provider) => {
+    const universalId = /^universal-(?:claude|codex|gemini)-(.+)$/.exec(
+      provider.id,
+    )?.[1];
+    if (!universalId) return;
+    closeProviderPanels();
+    setGlobalProviderFocus(universalId);
+    setCurrentView("globalProviders");
+  };
+
   const listCallbacks = {
     onEdit: (provider: Provider) => {
       setFormModeView(currentModeView);
@@ -1472,6 +1489,7 @@ function App() {
         ? setTerminalProvider
         : undefined,
     onCreate: () => openAddProvider(currentModeView),
+    onManageGlobal: handleManageGlobal,
     searchOpen: providerSearchOpen,
     onSearchOpenChange: setProviderSearchOpen,
   };
@@ -1629,11 +1647,28 @@ function App() {
 
   const renderGlobalPage = () => {
     switch (currentView) {
+      case "dashboard":
+        return (
+          <DashboardPage
+            onOpenApp={(app) => {
+              setActiveApp(app);
+              setCurrentView("providers");
+            }}
+            onOpenAuthCenter={() => setCurrentView("auth")}
+          />
+        );
       case "usage":
         return (
           <UsagePage
             initialAppType={usageAppFilter}
             onOpenRoutingSettings={() => openSettings("routing")}
+          />
+        );
+      case "globalProviders":
+        return (
+          <GlobalProvidersPage
+            focusProviderId={globalProviderFocus}
+            onFocusHandled={() => setGlobalProviderFocus(null)}
           />
         );
       case "auth":

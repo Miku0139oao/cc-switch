@@ -8,6 +8,8 @@ import type {
   AppProxyConfig,
   ProxyStackWriteError,
   ProxyTakeoverStatus,
+  StackFallbackTarget,
+  BalanceStrategy,
 } from "@/types/proxy";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { getAppLabel } from "@/config/appConfig";
@@ -18,6 +20,8 @@ export const proxyKeys = {
   globalConfig: ["globalProxyConfig"] as const,
   clientHost: ["proxyClientHost"] as const,
   appConfig: (appType: string) => ["appProxyConfig", appType] as const,
+  stackFallbackEvents: (appType: string | null) =>
+    ["stackFallbackEvents", appType ?? "all"] as const,
 };
 
 // ========== 代理服务器状态 Hooks ==========
@@ -89,6 +93,37 @@ export function useProxyStack(appType: string, enabled: boolean) {
   });
 }
 
+/**
+ * 最近的聚合失敗轉移事件。後端只寫入、不在請求日誌裡，這個 hook 是唯一讀取路徑。
+ * 輪詢間隔比狀態慢：事件是除錯用，不需要秒級。
+ */
+export function useStackFallbackEvents(
+  appType: string | null,
+  enabled = true,
+  limit = 50,
+) {
+  return useQuery({
+    queryKey: proxyKeys.stackFallbackEvents(appType),
+    queryFn: () => proxyApi.getStackFallbackEvents(appType ?? undefined, limit),
+    enabled,
+    refetchInterval: enabled ? 10_000 : false,
+  });
+}
+
+/** 請求詳情裡的路由軌跡：只在抽屜開啟時查一次。 */
+export function useStackFallbackEventsForRequest(
+  requestId: string | null,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ["stackFallbackEvents", "request", requestId],
+    queryFn: () =>
+      proxyApi.getStackFallbackEventsForRequest(requestId as string),
+    enabled: enabled && Boolean(requestId),
+    staleTime: Infinity,
+  });
+}
+
 function isStackWriteError(error: unknown): error is ProxyStackWriteError {
   return (
     typeof error === "object" &&
@@ -132,6 +167,27 @@ export function useSetProxyStackMember() {
             ? t("provider.stackReselectHint")
             : undefined,
           closeButton: true,
+          // 移除成員是一鍵操作：給一個短暫的「復原」，避免誤點。
+          duration: variables.enabled ? undefined : 6000,
+          action: variables.enabled
+            ? undefined
+            : {
+                label: t("common.undo"),
+                onClick: () => {
+                  void proxyApi
+                    .setProxyStackMember(
+                      variables.appType,
+                      variables.providerId,
+                      true,
+                    )
+                    .then(() =>
+                      queryClient.invalidateQueries({
+                        queryKey: ["providers", variables.appType],
+                      }),
+                    )
+                    .catch(() => undefined);
+                },
+              },
         },
       );
       if (notice) {
@@ -153,6 +209,103 @@ export function useSetProxyStackMember() {
     onSettled: (_data, _error, variables) => {
       queryClient.invalidateQueries({
         queryKey: ["providers", variables.appType],
+      });
+    },
+  });
+}
+
+export function useReorderStackMembers() {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: ({
+      appType,
+      providerIds,
+    }: {
+      appType: string;
+      providerIds: string[];
+    }) => proxyApi.reorderStackMembers(appType, providerIds),
+    onSuccess: (_data, variables) => {
+      toast.success(t("provider.stackPrioritySaved"), { closeButton: true });
+      if (
+        variables.appType === "codex" ||
+        variables.appType === "claude-desktop"
+      ) {
+        toast.info(t("provider.stackReselectHint"), { closeButton: true });
+      }
+    },
+    onError: (error: unknown) => {
+      if (isStackWriteError(error) && error.partial) {
+        toast.warning(t("provider.stackPartial"), {
+          description: error.message,
+          closeButton: true,
+        });
+        return;
+      }
+      toast.error(t("provider.stackPriorityFailed"), {
+        description: extractErrorMessage(error),
+      });
+    },
+    onSettled: (_data, _error, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["providers", variables.appType],
+      });
+    },
+  });
+}
+
+export function useSetStackFallbackChain() {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: ({
+      appType,
+      modelId,
+      targets,
+    }: {
+      appType: string;
+      modelId: string;
+      targets: StackFallbackTarget[];
+    }) => proxyApi.setStackFallbackChain(appType, modelId, targets),
+    onSuccess: (_data, variables) => {
+      toast.success(t("mode.fallback.saved"), { closeButton: true });
+      queryClient.invalidateQueries({
+        queryKey: ["providers", variables.appType],
+      });
+    },
+    onError: (error: unknown) => {
+      toast.error(t("mode.fallback.saveFailed"), {
+        description: extractErrorMessage(error),
+      });
+    },
+  });
+}
+
+export function useSetStackBalancePolicy() {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: ({
+      appType,
+      strategy,
+      weights,
+    }: {
+      appType: string;
+      strategy: BalanceStrategy;
+      weights: Record<string, number>;
+    }) => proxyApi.setStackBalancePolicy(appType, strategy, weights),
+    onSuccess: (_data, variables) => {
+      toast.success(t("mode.balance.saved"), { closeButton: true });
+      queryClient.invalidateQueries({
+        queryKey: ["providers", variables.appType],
+      });
+    },
+    onError: (error: unknown) => {
+      toast.error(t("mode.balance.saveFailed"), {
+        description: extractErrorMessage(error),
       });
     },
   });

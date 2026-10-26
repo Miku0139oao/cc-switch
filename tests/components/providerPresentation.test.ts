@@ -41,7 +41,9 @@ function actions() {
     queueMove: vi.fn(),
     stackAdd: vi.fn(),
     stackRemove: vi.fn(),
+    stackMove: vi.fn(),
     stackSetDefault: vi.fn(),
+    stackReorder: vi.fn(),
   };
 }
 
@@ -163,7 +165,7 @@ describe("buildSwitchSections — delete guard", () => {
 });
 
 describe("buildSwitchSections — route", () => {
-  it("routes to a provider and keeps official subscriptions out", () => {
+  it("routes to official subscriptions like any other provider", () => {
     const { sections, input } = build({
       active: "route",
       view: "route",
@@ -178,10 +180,9 @@ describe("buildSwitchSections — route", () => {
     expect(input.actions.routeTo).toHaveBeenCalledWith(relay);
     // 路由页上没有跟直连那家有关的操作，不标「直连时使用」
     expect(item(sections, "relay").chips).toEqual([]);
-    expect(item(sections, "official").dim).toBe(true);
-    expect(button(sections, "official", "blocked").disabledReason).toBe(
-      "providerCard.reason.noRoute",
-    );
+    expect(item(sections, "official").dim).toBeUndefined();
+    button(sections, "official", "routeHere").onClick();
+    expect(input.actions.routeTo).toHaveBeenCalledWith(official);
   });
 
   it("splits the failover queue from the rest and only moves within the queue", () => {
@@ -308,16 +309,62 @@ describe("buildSwitchSections — route", () => {
       expect(item(sections, id).chips).toEqual([]);
       expect(item(sections, id).menuItems).toBeUndefined();
     }
-    // 不能路由的官方订阅没有按钮可挂原因，原因在「官方」徽标上
-    expect(item(sections, "official")).toMatchObject({
-      dim: true,
-      buttons: [],
-      chips: [{ key: "official", title: "providerCard.reason.noRoute" }],
-    });
+    // 官方订阅也可进入路由，只是此页没有行内主操作。
+    expect(item(sections, "official").dim).toBeUndefined();
+    expect(item(sections, "official").buttons).toEqual([]);
+    expect(item(sections, "official").chips).toEqual([
+      {
+        key: "official",
+        label: "providerCard.chip.official",
+        tone: "outline",
+      },
+    ]);
   });
 });
 
 describe("buildSwitchSections — stack", () => {
+  it("separates global providers from same-named agent providers", () => {
+    const local = provider("codex-local-quickrouter", {
+      name: "Quickrouter",
+    });
+    const universal = provider("universal-codex-uuid", {
+      name: "Quickrouter",
+    });
+    const { sections, input } = build({
+      app: "codex",
+      active: "stack",
+      view: "stack",
+      providers: [local, universal],
+      directId: null,
+      routeId: null,
+    });
+
+    expect(
+      sections.map((section) => [section.key, section.items.length]),
+    ).toEqual([
+      ["default", 0],
+      ["members", 0],
+      ["globalAvailable", 1],
+      ["available", 1],
+    ]);
+    expect(item(sections, universal.id)).toMatchObject({
+      section: "globalAvailable",
+      chips: [
+        {
+          key: "global",
+          label: "providerCard.chip.global",
+          tone: "global",
+        },
+      ],
+    });
+    expect(item(sections, local.id)).toMatchObject({
+      section: "available",
+      chips: [],
+    });
+    button(sections, universal.id, "add").onClick();
+    expect(input.actions.stackAdd).toHaveBeenCalledWith(universal);
+  });
+
   it("shows the default, members and available providers", () => {
     const { sections, input } = build({
       active: "stack",
@@ -339,11 +386,13 @@ describe("buildSwitchSections — stack", () => {
       tone: "stack",
       status: { label: "providerCard.status.currentDefault" },
     });
-    // 发布了 0 个模型的成员要提醒
-    expect(item(sections, "backup").chips[0]).toMatchObject({
-      key: "models",
-      tone: "warning",
-    });
+    // 发布了 0 个模型的成员要提醒；优先级徽章同在，不依赖两者的先后顺序
+    expect(item(sections, "backup").chips).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "priority", label: "P1" }),
+        expect.objectContaining({ key: "models", tone: "warning" }),
+      ]),
+    );
     // 行上只有名单的移除 / 添加；「设为默认」在「更多」菜单里
     expect(item(sections, "backup").buttons.map((b) => b.key)).toEqual([
       "remove",
@@ -364,11 +413,10 @@ describe("buildSwitchSections — stack", () => {
     expect(input.actions.stackSetDefault).toHaveBeenCalledWith(converted);
     // 默认那家自己没有这一项
     expect(item(sections, "relay").menuItems).toBeUndefined();
-    // Claude 官方订阅不能进聚合，也做不了默认
-    expect(button(sections, "official", "blocked").disabledReason).toBe(
-      "providerCard.reason.noStack",
-    );
-    expect(item(sections, "official").menuItems).toBeUndefined();
+    // 官方订阅可进聚合，也可设为默认。
+    button(sections, "official", "add").onClick();
+    expect(input.actions.stackAdd).toHaveBeenCalledWith(official);
+    expect(setDefaultItem(sections, "official")).toBeDefined();
   });
 
   it("previews the stack outside Stack mode: rows only edit the list", () => {
@@ -401,6 +449,60 @@ describe("buildSwitchSections — stack", () => {
     expect(setDefaultItem(sections, "backup").disabledReason).toBeUndefined();
     setDefaultItem(sections, "converted").onSelect();
     expect(input.actions.stackSetDefault).toHaveBeenCalledWith(converted);
+  });
+
+  it("uses persisted Stack order for P1..N priority and move actions", () => {
+    const { sections, input } = build({
+      active: "stack",
+      view: "stack",
+      routeId: "relay",
+      stackMembers: new Map([
+        ["relay", 1],
+        ["backup", 1],
+        ["converted", 1],
+      ]),
+      stackOrder: ["relay", "converted", "backup"],
+    });
+
+    expect(item(sections, "converted").chips[0]).toMatchObject({
+      key: "priority",
+      label: "P1",
+    });
+    expect(item(sections, "backup").chips[0]).toMatchObject({
+      key: "priority",
+      label: "P2",
+    });
+    expect(item(sections, "converted").move?.onUp).toBeUndefined();
+    item(sections, "converted").move?.onDown?.();
+    expect(input.actions.stackMove).toHaveBeenCalledWith(converted, 1);
+  });
+
+  it("keeps the default section honest when search hides the default provider", () => {
+    const { sections } = build({
+      active: "stack",
+      view: "stack",
+      routeId: "relay",
+      // 搜尋只留下 backup；預設那家 relay 被藏起來
+      providers: [backup],
+      allProviders: [official, relay, backup, converted],
+      stackMembers: new Map([
+        ["relay", 1],
+        ["backup", 1],
+      ]),
+    });
+
+    const defaultSection = sections.find(
+      (section) => section.key === "default",
+    );
+    expect(defaultSection?.items).toEqual([]);
+    expect(defaultSection?.emptyText).toBe(
+      "providerCard.section.stackDefaultHidden",
+    );
+    // 成員的優先序仍按完整名單算：relay 是預設，backup 就是 P1
+    expect(item(sections, "backup").chips[0]).toMatchObject({
+      key: "priority",
+      label: "P1",
+    });
   });
 
   it("does not let the Stack default change from the preview while routing", () => {

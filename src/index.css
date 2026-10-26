@@ -592,3 +592,26 @@ input[type="password"]::-ms-clear {
     flex: 1 1 0%;
   }
 }
+
+/*
+ * Desktop chrome should behave like an application, not a document. Editable
+ * controls and content explicitly marked copyable opt back into native text
+ * selection and the WebView context menu; see lib/contextMenu.ts.
+ */
+body {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+input,
+textarea,
+[contenteditable="true"],
+[contenteditable=""],
+pre,
+code,
+.selectable {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: auto;
+}

@@ -5,6 +5,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import {
   ArrowLeft,
   BookOpen,
+  Boxes,
   ChartColumn,
   ChevronsLeft,
   ChevronsRight,
@@ -16,6 +17,7 @@ import {
   KeyRound,
   Layers,
   LayoutGrid,
+  LayoutDashboard,
   Route,
   Server,
   Settings,
@@ -278,6 +280,11 @@ function MainDirectory({
     { page: "prompts", label: t("nav.prompts"), icon: BookOpen },
     { page: "sessions", label: t("nav.sessions"), icon: History },
     {
+      page: "globalProviders",
+      label: t("nav.globalProviders"),
+      icon: Boxes,
+    },
+    {
       page: "auth",
       label: t("nav.auth"),
       icon: KeyRound,
@@ -304,6 +311,13 @@ function MainDirectory({
           collapsed && "no-scrollbar",
         )}
       >
+        <NavItem
+          collapsed={collapsed}
+          selected={view === "dashboard"}
+          icon={LayoutDashboard}
+          label={t("nav.dashboard")}
+          onClick={() => onSelectPage("dashboard")}
+        />
         <div
           role="group"
           aria-label={t("nav.appsGroup")}

@@ -1740,6 +1740,8 @@ pub fn run() {
             commands::exit_proxy_apps_in_mode,
             commands::get_direct_provider,
             commands::get_proxy_status,
+            commands::get_app_capabilities,
+            commands::get_dashboard_snapshot,
             commands::get_proxy_config,
             commands::update_proxy_config,
             // Global & Per-App Config
@@ -1756,6 +1758,9 @@ pub fn run() {
             commands::switch_proxy_provider,
             commands::get_proxy_stack,
             commands::set_proxy_stack_member,
+            commands::reorder_stack_members,
+            commands::set_stack_fallback_chain,
+            commands::set_stack_balance_policy,
             commands::adopt_codex_stack_catalog,
             commands::restart_codex_app_server_daemon,
             commands::acknowledge_codex_stale_clients,
@@ -1765,6 +1770,8 @@ pub fn run() {
             commands::get_circuit_breaker_config,
             commands::update_circuit_breaker_config,
             commands::get_circuit_breaker_stats,
+            commands::get_stack_fallback_events,
+            commands::get_stack_fallback_events_for_request,
             // Failover queue management
             commands::get_failover_queue,
             commands::get_available_providers_for_failover,
@@ -1799,6 +1806,10 @@ pub fn run() {
             commands::stream_check_provider,
             // Session manager
             commands::list_sessions,
+            commands::get_codex_session_routes,
+            commands::list_codex_session_models,
+            commands::set_codex_session_route,
+            commands::clear_codex_session_route,
             commands::get_session_messages,
             commands::stream_session_messages,
             commands::get_session_block_content,
@@ -1821,6 +1832,8 @@ pub fn run() {
             commands::upsert_universal_provider,
             commands::delete_universal_provider,
             commands::sync_universal_provider,
+            commands::get_universal_provider_statuses,
+            commands::get_universal_provider_status,
             // Custom icon library
             commands::get_custom_icons,
             commands::add_custom_icon,

@@ -179,7 +179,7 @@ describe("providerNeedsRouting", () => {
     expect(resolveCodexOfficialIdentity("codex", storedAuthKey)).toBe(
       "api_key",
     );
-    expect(supportsOfficialProxyTakeover("codex", storedAuthKey)).toBe(false);
+    expect(supportsOfficialProxyTakeover("codex", storedAuthKey)).toBe(true);
     expect(resolveCodexOfficialIdentity("codex", storedBearer)).toBeNull();
     expect(resolveCodexOfficialIdentity("codex", explicitOpenAi)).toBe(
       "api_key",

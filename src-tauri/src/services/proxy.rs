@@ -9,9 +9,9 @@ use crate::provider::Provider;
 use crate::proxy::server::ProxyServer;
 use crate::proxy::switch_lock::SwitchLockManager;
 use crate::proxy::types::*;
+use crate::services::UsageCache;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tauri::Emitter;
 use tokio::sync::RwLock;
 
 use crate::live::project::claude::PROXY_TOKEN_PLACEHOLDER;
@@ -19,6 +19,7 @@ use crate::live::project::claude::PROXY_TOKEN_PLACEHOLDER;
 #[derive(Clone)]
 pub struct ProxyService {
     db: Arc<Database>,
+    usage_cache: Arc<UsageCache>,
     server: Arc<RwLock<Option<ProxyServer>>>,
     /// AppHandle，用于传递给 ProxyServer 以支持故障转移时的 UI 更新
     app_handle: Arc<RwLock<Option<tauri::AppHandle>>>,
@@ -58,8 +59,13 @@ pub(crate) fn proxy_origin(host: &str, listen_port: u16) -> String {
 
 impl ProxyService {
     pub fn new(db: Arc<Database>) -> Self {
+        Self::with_usage_cache(db, Arc::new(UsageCache::new()))
+    }
+
+    pub fn with_usage_cache(db: Arc<Database>, usage_cache: Arc<UsageCache>) -> Self {
         Self {
             db,
+            usage_cache,
             server: Arc::new(RwLock::new(None)),
             app_handle: Arc::new(RwLock::new(None)),
             switch_locks: SwitchLockManager::new(),
@@ -137,7 +143,12 @@ impl ProxyService {
 
         // 4. 创建并启动服务器
         let app_handle = self.app_handle.read().await.clone();
-        let server = ProxyServer::new(config.clone(), self.db.clone(), app_handle);
+        let server = ProxyServer::new_with_usage_cache(
+            config.clone(),
+            self.db.clone(),
+            app_handle,
+            self.usage_cache.clone(),
+        );
         let info = server
             .start()
             .await
@@ -208,14 +219,6 @@ impl ProxyService {
             server
                 .set_active_target(app_type.as_str(), &provider.id, &provider.name)
                 .await;
-        }
-    }
-
-    pub(crate) async fn emit(&self, event: &str, payload: Value) {
-        if let Some(handle) = self.app_handle.read().await.as_ref() {
-            if let Err(error) = handle.emit(event, payload) {
-                log::warn!("发送事件 {event} 失败: {error}");
-            }
         }
     }
 
@@ -573,7 +576,12 @@ impl ProxyService {
     /// 按 `config` 起一个新服务，动态端口回写进库。
     async fn start_with(&self, config: &ProxyConfig) -> Result<ProxyServer, String> {
         let app_handle = self.app_handle.read().await.clone();
-        let server = ProxyServer::new(config.clone(), self.db.clone(), app_handle);
+        let server = ProxyServer::new_with_usage_cache(
+            config.clone(),
+            self.db.clone(),
+            app_handle,
+            self.usage_cache.clone(),
+        );
         let info = server.start().await.map_err(|e| e.to_string())?;
         if let Err(e) = self
             .persist_ephemeral_listen_port_if_needed(config, info.port)
@@ -637,6 +645,21 @@ impl ProxyService {
             log::debug!("{app_type} 熔断器配置将在下次代理启动时生效");
         }
         Ok(())
+    }
+
+    /// 读取指定 Provider 的熔断器实时状态（代理未运行时返回 None）。
+    pub async fn get_provider_circuit_breaker_stats(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+    ) -> Option<crate::proxy::CircuitBreakerStats> {
+        if let Some(server) = self.server.read().await.as_ref() {
+            server
+                .get_circuit_breaker_stats(provider_id, app_type)
+                .await
+        } else {
+            None
+        }
     }
 
     /// 重置指定 Provider 的熔断器

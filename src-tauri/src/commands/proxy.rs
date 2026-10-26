@@ -2,10 +2,12 @@
 //!
 //! 提供前端调用的 API 接口
 
+use crate::database::StackFallbackEvent;
 use crate::error::AppError;
 use crate::proxy::types::*;
 use crate::proxy::{CircuitBreakerConfig, CircuitBreakerStats};
 use crate::store::AppState;
+use crate::AppType;
 use std::str::FromStr;
 
 /// 有 `proxy_config` 行的应用：重试、熔断、故障转移这些设置只对它们有意义。
@@ -202,6 +204,48 @@ pub async fn set_proxy_stack_member(
     result
 }
 
+/// Reorder the added (non-default) Stack providers. The order is their 0..N
+/// fallback priority and is committed together with the client projection.
+#[tauri::command]
+pub async fn reorder_stack_members(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+    provider_ids: Vec<String>,
+) -> Result<(), crate::mode::controller::StackWriteError> {
+    let app =
+        require_mode_app(&app_type).map_err(crate::mode::controller::StackWriteError::unchanged)?;
+    let result =
+        crate::mode::controller::reorder_stack_members(state.inner(), &app, provider_ids).await;
+    crate::tray::refresh_tray_menu(&app_handle);
+    result
+}
+
+/// Replace an aggregated model's explicit fallback chain.
+#[tauri::command]
+pub async fn set_stack_fallback_chain(
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+    model_id: String,
+    targets: Vec<crate::mode::state::StackFallbackTarget>,
+) -> Result<(), String> {
+    let app = require_mode_app(&app_type)?;
+    crate::mode::controller::set_stack_fallback_chain(state.inner(), &app, &model_id, targets).await
+}
+
+/// Set the App-level aggregation balancing policy. State-only and effective on
+/// the next request; no client config rewrite or restart is involved.
+#[tauri::command]
+pub async fn set_stack_balance_policy(
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+    strategy: crate::mode::state::BalanceStrategy,
+    weights: std::collections::BTreeMap<String, u32>,
+) -> Result<(), String> {
+    let app = require_mode_app(&app_type)?;
+    crate::mode::controller::set_stack_balance_policy(state.inner(), &app, strategy, weights).await
+}
+
 /// Codex 聚合的模型被别的模型目录挡住时，改用 CC Switch 生成的目录（去掉指向别的文件的
 /// `model_catalog_json`）。返回之后还剩的提示。
 #[tauri::command]
@@ -215,6 +259,74 @@ pub async fn adopt_codex_stack_catalog(
 #[tauri::command]
 pub async fn get_proxy_status(state: tauri::State<'_, AppState>) -> Result<ProxyStatus, String> {
     state.proxy_service.get_status().await
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardAgentState {
+    pub app_type: String,
+    pub mode: String,
+    pub attached: bool,
+    pub route_provider_id: Option<String>,
+    pub direct_provider_id: Option<String>,
+    pub stack_members: usize,
+    pub fallback_count: usize,
+    pub launch_scoped: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardSnapshot {
+    pub service: ProxyStatus,
+    pub agents: Vec<DashboardAgentState>,
+}
+
+#[tauri::command]
+pub fn get_app_capabilities() -> Vec<crate::mode::capabilities::AppCapabilities> {
+    crate::mode::capabilities::all()
+}
+
+/// Compact dashboard view. It intentionally returns provider ids and health /
+/// stack metadata only; credentials and provider request config never cross
+/// this interface.
+#[tauri::command]
+pub async fn get_dashboard_snapshot(
+    state: tauri::State<'_, AppState>,
+) -> Result<DashboardSnapshot, String> {
+    let service = state.proxy_service.get_status().await?;
+    let mut agents = Vec::new();
+    for app in AppType::all() {
+        let mode = crate::mode::current::mode_state(&app);
+        let stack = crate::mode::state::stack(
+            &crate::live::engine::DeviceStore::for_device(),
+            app.as_str(),
+        )
+        .map_err(|error| error.to_string())?;
+        let direct_provider_id = crate::mode::current::provider_for(
+            &state.db,
+            &app,
+            crate::mode::current::Purpose::Direct,
+        )
+        .map_err(|error| error.to_string())?;
+        let mode_name = if !mode.is_proxy() {
+            "direct"
+        } else if crate::mode::stack::supports_stack(&app) && stack.enabled {
+            "stack"
+        } else {
+            "route"
+        };
+        agents.push(DashboardAgentState {
+            app_type: app.as_str().to_string(),
+            mode: mode_name.to_string(),
+            attached: mode.attached,
+            route_provider_id: mode.proxy_route,
+            direct_provider_id,
+            stack_members: stack.members.len(),
+            fallback_count: stack.fallbacks.values().map(Vec::len).sum(),
+            launch_scoped: crate::mode::capabilities::for_app(&app).launch_scoped,
+        });
+    }
+    Ok(DashboardSnapshot { service, agents })
 }
 
 /// 获取代理配置
@@ -565,8 +677,43 @@ pub async fn get_circuit_breaker_stats(
     app_type: String,
 ) -> Result<Option<CircuitBreakerStats>, String> {
     require_mode_app(&app_type)?;
-    // 这个功能需要访问运行中的代理服务器的内存状态
-    // 目前先返回 None，后续可以通过 ProxyService 暴露接口来实现
-    let _ = (state, provider_id, app_type);
-    Ok(None)
+    Ok(state
+        .proxy_service
+        .get_provider_circuit_breaker_stats(&provider_id, &app_type)
+        .await)
+}
+
+/// 最近的聚合失败转移事件。`app_type` 为空时返回所有应用；`limit` 默认 50，上限 500。
+#[tauri::command]
+pub async fn get_stack_fallback_events(
+    state: tauri::State<'_, AppState>,
+    app_type: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<StackFallbackEvent>, String> {
+    if let Some(ref app) = app_type {
+        require_mode_app(app)?;
+    }
+    state
+        .db
+        .get_stack_fallback_events(app_type.as_deref(), limit.unwrap_or(50))
+        .map_err(|error| error.to_string())
+}
+
+/// 某個請求對應的聚合換家軌跡：先找請求的 session_id，再讀該工作階段的事件。
+#[tauri::command]
+pub async fn get_stack_fallback_events_for_request(
+    state: tauri::State<'_, AppState>,
+    request_id: String,
+) -> Result<Vec<StackFallbackEvent>, String> {
+    let Some(session_id) = state
+        .db
+        .get_request_session_id(&request_id)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(Vec::new());
+    };
+    state
+        .db
+        .get_stack_fallback_events_by_session(&session_id, 100)
+        .map_err(|error| error.to_string())
 }

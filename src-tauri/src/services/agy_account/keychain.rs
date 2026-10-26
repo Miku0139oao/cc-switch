@@ -71,6 +71,7 @@ impl SystemKeychain {
 
     /// 真机测试用的另一条，别动 agy 那条。
     #[cfg(test)]
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn named(service: &'static str, account: &'static str) -> Self {
         Self { service, account }
     }

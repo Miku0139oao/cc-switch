@@ -22,6 +22,8 @@ interface ProviderStatsTableProps {
   providerName?: string;
   model?: string;
   refreshIntervalMs: number;
+  /** 點供應商名稱 → 到請求日誌並帶上這個篩選 */
+  onDrillDown?: (providerName: string) => void;
 }
 
 export function ProviderStatsTable({
@@ -30,6 +32,7 @@ export function ProviderStatsTable({
   providerName,
   model,
   refreshIntervalMs,
+  onDrillDown,
 }: ProviderStatsTableProps) {
   const { t, i18n } = useTranslation();
   const { money, moneyTitle } = useMoneyFormat();
@@ -103,9 +106,20 @@ export function ProviderStatsTable({
                     className={usageTable.row}
                   >
                     <td className={usageTable.td}>
-                      <span title={usageProviderTitle(provider)}>
-                        {provider.label}
-                      </span>
+                      {onDrillDown ? (
+                        <button
+                          type="button"
+                          title={usageProviderTitle(provider)}
+                          className="min-w-0 truncate text-start text-fg-1 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          onClick={() => onDrillDown(stat.providerName)}
+                        >
+                          {provider.label}
+                        </button>
+                      ) : (
+                        <span title={usageProviderTitle(provider)}>
+                          {provider.label}
+                        </span>
+                      )}
                     </td>
                     <td className={usageTable.td}>
                       {fmtInt(stat.requestCount, locale)}

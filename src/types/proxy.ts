@@ -72,6 +72,34 @@ export interface AppModeView {
   directProviderId: string | null;
 }
 
+export type ModelCatalogCapability = "dynamic" | "configurable" | "fixed";
+
+export interface AppCapabilities {
+  appType: string;
+  direct: boolean;
+  route: boolean;
+  stack: boolean;
+  failover: boolean;
+  launchScoped: boolean;
+  modelCatalog: ModelCatalogCapability;
+}
+
+export interface DashboardAgentState {
+  appType: string;
+  mode: AppMode;
+  attached: boolean;
+  routeProviderId: string | null;
+  directProviderId: string | null;
+  stackMembers: number;
+  fallbackCount: number;
+  launchScoped: boolean;
+}
+
+export interface DashboardSnapshot {
+  service: ProxyStatus;
+  agents: DashboardAgentState[];
+}
+
 /** 启动时没能接上代理、已退回直连的应用。 */
 export interface StartupAttachFailure {
   appType: string;
@@ -87,7 +115,46 @@ export interface ProxyStackMember {
   route: boolean;
   /** 这家不做默认、只做成员时发布几个模型（换默认的预览用；默认那家的 `modelIds` 可能为空）。 */
   memberModels: number;
+  /** Flattened models available to the fallback editor. */
+  models: ProxyStackModel[];
 }
+
+export interface ProxyStackModel {
+  id: string;
+  upstreamModel: string;
+  displayName: string;
+}
+
+export interface StackFallbackTarget {
+  providerId: string;
+  upstreamModel: string;
+}
+
+export type ProxyStackFallbacks = Record<string, StackFallbackTarget[]>;
+
+/**
+ * 聚合模式下一次「失敗 → 換到下一段」的紀錄。
+ * `attemptIndex` 是失敗的那一段（0 起算）；`next*` 是接下來要試的供應商與上游模型。
+ * `errorClass` 是後端歸類過的錯誤種類，不是原始錯誤字串。
+ */
+export interface StackFallbackEvent {
+  id: number;
+  sessionId: string;
+  appType: string;
+  logicalModel: string;
+  attemptIndex: number;
+  failedProviderId: string;
+  nextProviderId: string;
+  nextModel: string;
+  errorClass: string;
+  createdAt: number;
+}
+
+export type BalanceStrategy =
+  | "priority"
+  | "roundRobin"
+  | "weightedRoundRobin"
+  | "leastLoad";
 
 /**
  * Codex Stack 模型客户端看不到或看不全：`routeOwnsCatalog` 路由供应商使用自己的模型目录文件，
@@ -155,6 +222,16 @@ export interface ProxyStack {
   staleRevision?: string;
   /** Codex：聚合设置里「子代理模型」下拉的选项，发布 Stack 模型的成员按名单顺序。 */
   subagentModels?: ProxyStackSubagentModel[];
+  /** Explicit fallback chains keyed by the model id published to the client. */
+  fallbacks?: ProxyStackFallbacks;
+  /** Effective chains: an explicit override, or the automatic Stack priority order. */
+  effectiveFallbacks?: ProxyStackFallbacks;
+  /** First-attempt policy for new aggregated-model sessions. */
+  balanceStrategy: BalanceStrategy;
+  /** Effective provider-level weight; missing providers use 1. */
+  balanceWeights: Record<string, number>;
+  /** Number of valid persisted session/model assignments. */
+  balancedSessionCount: number;
 }
 
 /** 重启 Codex 守护进程的结果：`notRunning` 表示它没在运行，什么都没做。 */

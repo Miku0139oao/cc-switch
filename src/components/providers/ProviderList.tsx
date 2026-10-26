@@ -1,5 +1,10 @@
 import { CSS } from "@dnd-kit/utilities";
-import { DndContext, closestCenter, type Modifier } from "@dnd-kit/core";
+import {
+  DndContext,
+  closestCenter,
+  type DragEndEvent,
+  type Modifier,
+} from "@dnd-kit/core";
 import {
   SortableContext,
   useSortable,
@@ -15,7 +20,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { Search, X } from "lucide-react";
+import { Globe2, Search, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "@/lib/toast";
@@ -57,6 +62,7 @@ import {
   buildAdditiveSections,
   buildLaunchSections,
   buildSwitchSections,
+  isUniversalProvider,
   type CardPresentation,
   type ProviderSection,
   type SwitchModeInput,
@@ -85,6 +91,8 @@ interface ProviderListProps {
   onOpenWebsite: (url: string) => void;
   onOpenTerminal?: (provider: Provider) => void;
   onCreate?: () => void;
+  /** 由全域供應商同步出來的子卡：編輯／刪除回到全域供應商頁 */
+  onManageGlobal?: (provider: Provider) => void;
   /** OpenClaw 的默认模型、Hermes 的当前供应商 */
   onSetAsDefault?: (provider: Provider, modelId?: string) => void;
   /** 切换式应用必传：按模式 tab 算卡片 */
@@ -115,6 +123,7 @@ export function ProviderList({
   onOpenWebsite,
   onOpenTerminal,
   onCreate,
+  onManageGlobal,
   onSetAsDefault,
   switchMode,
   isLoading = false,
@@ -127,6 +136,34 @@ export function ProviderList({
   const { sortedProviders, sensors, handleDragEnd } = useDragSort(
     providers,
     appId,
+  );
+
+  // 聚合頁的拖曳要改的是「成員優先序」，不是 providers 的 sort_index。只在兩端都是
+  // 非預設成員時才處理；拖到可加入 / 預設區就忽略，避免把別區的卡塞進名單。
+  const handleListDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const stack = switchMode;
+      if (!stack || stack.view !== "stack") {
+        void handleDragEnd(event);
+        return;
+      }
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const defaultId = stack.routeId ?? stack.directId;
+      const members = (
+        stack.stackOrder?.length
+          ? stack.stackOrder
+          : Array.from(stack.stackMembers.keys())
+      ).filter((id) => id !== defaultId && stack.stackMembers.has(id));
+      const oldIndex = members.indexOf(String(active.id));
+      const newIndex = members.indexOf(String(over.id));
+      if (oldIndex < 0 || newIndex < 0) return;
+      const next = [...members];
+      const [moved] = next.splice(oldIndex, 1);
+      next.splice(newIndex, 0, moved);
+      stack.actions.stackReorder(next);
+    },
+    [handleDragEnd, switchMode],
   );
 
   const { data: opencodeLiveIds, isPending: isOpencodeLiveIdsPending } =
@@ -303,12 +340,15 @@ export function ProviderList({
           provider.notes,
           provider.websiteUrl,
           extractProviderBaseUrl(provider.settingsConfig),
+          isUniversalProvider(provider)
+            ? `${t("providerCard.chip.global")} universal global`
+            : "",
         ]
           .filter(Boolean)
           .join("\n")
           .toLowerCase(),
       })),
-    [sortedProviders],
+    [sortedProviders, t],
   );
 
   // 关掉面板就不再过滤：搜索词留着，下次打开还在，但列表不会悄悄少几家
@@ -330,6 +370,7 @@ export function ProviderList({
         app: appId,
         t,
         providers: filteredProviders,
+        allProviders: sortedProviders,
         queue: switchMode.queue.filter((id) => known.has(id)),
       });
     }
@@ -496,6 +537,8 @@ export function ProviderList({
       onOpenTerminal={appId === "agy" ? undefined : onOpenTerminal}
       onTest={handleTest}
       isTesting={isChecking(provider.id)}
+      managedGlobally={isUniversalProvider(provider)}
+      onManageGlobal={onManageGlobal}
     />
   );
 
@@ -558,6 +601,9 @@ export function ProviderList({
 
   const renderSectionTitle = (section: ProviderSection) => (
     <div className="flex items-center gap-1 text-caption font-semibold text-fg-2">
+      {section.key === "globalAvailable" && (
+        <Globe2 className="h-3.5 w-3.5 text-action-text" aria-hidden="true" />
+      )}
       <h2 className="m-0 text-caption font-semibold">{section.title}</h2>
       {section.help && (
         <HelpTip title={section.help.title}>{section.help.body}</HelpTip>
@@ -606,7 +652,7 @@ export function ProviderList({
           sensors={sensors}
           modifiers={verticalDragModifiers}
           collisionDetection={closestCenter}
-          onDragEnd={handleDragEnd}
+          onDragEnd={handleListDragEnd}
         >
           {sections.map((section, index) => (
             <section key={section.key} className="space-y-2">
@@ -651,6 +697,8 @@ interface SortableProviderCardProps {
   onOpenTerminal?: (provider: Provider) => void;
   onTest?: (provider: Provider) => void;
   isTesting: boolean;
+  managedGlobally?: boolean;
+  onManageGlobal?: (provider: Provider) => void;
 }
 
 function SortableProviderCard(props: SortableProviderCardProps) {

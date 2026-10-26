@@ -3,7 +3,7 @@
 //! 提供请求生命周期的上下文管理，封装通用初始化逻辑
 
 use crate::app_config::AppType;
-use crate::mode::stack::StackTarget;
+use crate::mode::stack::{StackBalanceContext, StackTarget};
 use crate::provider::Provider;
 use crate::proxy::{
     extract_session_id,
@@ -73,6 +73,11 @@ pub struct RequestContext {
     pub copilot_optimizer_config: CopilotOptimizerConfig,
     /// Stack 模型的请求（`mode::stack`）：直达 Stack 里的那一家，不读也不写任何路由状态。
     pub is_stack: bool,
+    /// Per-attempt upstream models for a Stack fallback chain. Kept aligned
+    /// with `providers`; ordinary routed requests leave this empty.
+    stack_attempt_models: Vec<String>,
+    /// Automatic first-attempt assignment for an aggregated-model session.
+    stack_balance: Option<StackBalanceContext>,
 }
 
 impl RequestContext {
@@ -125,84 +130,104 @@ impl RequestContext {
         );
 
         let is_stack = stack.is_some();
-        let (provider, providers, current_provider_id, request_model) = match stack {
-            Some(target) => {
-                // Stack 模型：只发往 Stack 里的那一家，不读代理路由、不经熔断器选家。按「单家、
-                // 不转移」处理：换成有效副本，转发和读响应两个阶段都从这里取，超时和重试
-                // 跟着关掉（见 `create_forwarder`）。
-                app_config.auto_failover_enabled = false;
-                log::debug!(
-                    "[{}] Stacked model {} → provider {}, upstream model {}, session: {}",
-                    tag,
-                    target.original_model,
-                    target.provider.name,
-                    target.upstream_model,
-                    session_id
-                );
-                (
-                    target.provider.clone(),
-                    vec![target.provider.clone()],
-                    target.provider.id,
-                    target.original_model,
-                )
-            }
-            None => {
-                let current_provider = crate::mode::current::provider_in_use(&state.db, &app_type)
-                    .ok()
-                    .flatten();
-                let current_provider_id = current_provider
-                    .as_ref()
-                    .map(|provider| provider.id.clone())
-                    .unwrap_or_default();
+        let stack_balance = stack.as_ref().and_then(|target| target.balance.clone());
+        let (provider, providers, current_provider_id, request_model, stack_attempt_models) =
+            match stack {
+                Some(target) => {
+                    // Stack 模型：只发往 Stack 里的那一家，不读代理路由、不经熔断器选家。按「单家、
+                    // 不转移」处理：换成有效副本，转发和读响应两个阶段都从这里取，超时和重试
+                    // 跟着关掉（见 `create_forwarder`）。
+                    app_config.auto_failover_enabled = !target.fallbacks.is_empty();
+                    let mut providers = vec![target.provider.clone()];
+                    let mut attempt_models = vec![target.upstream_model.clone()];
+                    for fallback in target.fallbacks {
+                        providers.push(fallback.provider);
+                        attempt_models.push(fallback.upstream_model);
+                    }
+                    log::debug!(
+                        "[{}] Stacked model {} → provider {}, upstream model {}, session: {}",
+                        tag,
+                        target.original_model,
+                        target.provider.name,
+                        target.upstream_model,
+                        session_id
+                    );
+                    (
+                        target.provider.clone(),
+                        providers,
+                        target.provider.id,
+                        target.original_model,
+                        attempt_models,
+                    )
+                }
+                None => {
+                    let current_provider =
+                        crate::mode::current::provider_in_use(&state.db, &app_type)
+                            .ok()
+                            .flatten();
+                    let current_provider_id = current_provider
+                        .as_ref()
+                        .map(|provider| provider.id.clone())
+                        .unwrap_or_default();
 
-                // 从请求体提取模型名称
-                let request_model = body
-                    .get("model")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
+                    // 从请求体提取模型名称
+                    let request_model = body
+                        .get("model")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
 
-                // Stack 模式不做故障转移：只发往默认那家，和故障转移关着时一样跳过熔断器选家；
-                // 队列留着，回到路由模式恢复。故障转移本来就关着时不用读模式。
-                let stack_mode = app_config.auto_failover_enabled
-                    && crate::mode::stack::stack_mode_now(&app_type);
-                let providers = if stack_mode {
-                    app_config.auto_failover_enabled = false;
-                    vec![current_provider.ok_or(ProxyError::NoProvidersConfigured)?]
-                } else {
-                    // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
-                    // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
-                    state
-                        .provider_router
-                        .select_providers_with_current(app_type_str, current_provider)
-                        .await
-                        .map_err(|e| match e {
-                            crate::error::AppError::AllProvidersCircuitOpen => {
-                                ProxyError::AllProvidersCircuitOpen
-                            }
-                            crate::error::AppError::NoProvidersConfigured => {
-                                ProxyError::NoProvidersConfigured
-                            }
-                            _ => ProxyError::DatabaseError(e.to_string()),
-                        })?
-                };
+                    // Stack 模式不做故障转移：只发往默认那家，和故障转移关着时一样跳过熔断器选家；
+                    // 队列留着，回到路由模式恢复。故障转移本来就关着时不用读模式。
+                    let stack_mode = app_config.auto_failover_enabled
+                        && crate::mode::stack::stack_mode_now(&app_type);
+                    let providers = if stack_mode {
+                        app_config.auto_failover_enabled = false;
+                        vec![current_provider.ok_or(ProxyError::NoProvidersConfigured)?]
+                    } else {
+                        // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
+                        // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
+                        state
+                            .provider_router
+                            .select_providers_with_current_and_usage(
+                                app_type_str,
+                                current_provider,
+                                Some(state.usage_cache.as_ref()),
+                            )
+                            .await
+                            .map_err(|e| match e {
+                                crate::error::AppError::AllProvidersCircuitOpen => {
+                                    ProxyError::AllProvidersCircuitOpen
+                                }
+                                crate::error::AppError::NoProvidersConfigured => {
+                                    ProxyError::NoProvidersConfigured
+                                }
+                                _ => ProxyError::DatabaseError(e.to_string()),
+                            })?
+                    };
 
-                let provider = providers
-                    .first()
-                    .cloned()
-                    .ok_or(ProxyError::NoAvailableProvider)?;
+                    let provider = providers
+                        .first()
+                        .cloned()
+                        .ok_or(ProxyError::NoAvailableProvider)?;
 
-                log::debug!(
-                    "[{}] Provider: {}, model: {}, failover chain: {} providers, session: {}",
-                    tag,
-                    provider.name,
-                    request_model,
-                    providers.len(),
-                    session_id
-                );
-                (provider, providers, current_provider_id, request_model)
-            }
-        };
+                    log::debug!(
+                        "[{}] Provider: {}, model: {}, failover chain: {} providers, session: {}",
+                        tag,
+                        provider.name,
+                        request_model,
+                        providers.len(),
+                        session_id
+                    );
+                    (
+                        provider,
+                        providers,
+                        current_provider_id,
+                        request_model,
+                        Vec::new(),
+                    )
+                }
+            };
 
         Ok(Self {
             start_time,
@@ -221,6 +246,8 @@ impl RequestContext {
             optimizer_config,
             copilot_optimizer_config,
             is_stack,
+            stack_attempt_models,
+            stack_balance,
         })
     }
 
@@ -264,8 +291,11 @@ impl RequestContext {
                 (0, 0, 0)
             };
 
-        // 故障转移关闭时强制 max_retries=0（仅尝试 1 个 provider），与「不超时 + 不切换」语义一致。
-        let max_retries = if self.app_config.auto_failover_enabled {
+        // Stack requests have an explicit ordered attempt list; try the whole
+        // list instead of stopping at the ordinary route-mode retry setting.
+        let max_retries = if self.is_stack {
+            stack_max_retries(self.providers.len())
+        } else if self.app_config.auto_failover_enabled {
             self.app_config.max_retries
         } else {
             0
@@ -273,6 +303,7 @@ impl RequestContext {
 
         RequestForwarder::new(
             state.provider_router.clone(),
+            state.usage_cache.clone(),
             non_streaming_timeout,
             state.status.clone(),
             state.current_providers.clone(),
@@ -291,6 +322,9 @@ impl RequestContext {
             max_retries,
         )
         .stack_request(self.is_stack)
+        .stack_attempt_models(self.stack_attempt_models.clone())
+        .stack_balance(self.stack_balance.clone())
+        .failover_enabled(self.app_config.auto_failover_enabled)
     }
 
     /// 获取 Provider 列表（用于故障转移）
@@ -347,9 +381,20 @@ pub(crate) fn extract_gemini_model_from_path(endpoint: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+fn stack_max_retries(provider_count: usize) -> u32 {
+    u32::try_from(provider_count.saturating_sub(1)).unwrap_or(u32::MAX)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::extract_gemini_model_from_path;
+    use super::{extract_gemini_model_from_path, stack_max_retries};
+
+    #[test]
+    fn stack_requests_retry_every_configured_provider() {
+        assert_eq!(stack_max_retries(0), 0);
+        assert_eq!(stack_max_retries(1), 0);
+        assert_eq!(stack_max_retries(6), 5);
+    }
 
     #[test]
     fn extract_model_with_action() {

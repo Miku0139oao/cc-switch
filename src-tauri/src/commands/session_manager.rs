@@ -3,6 +3,7 @@
 use tauri::ipc::{Channel, Response};
 use tauri_plugin_dialog::DialogExt;
 
+use crate::mode::session_route;
 use crate::session_manager;
 use crate::session_manager::cache::chunk_ranges;
 use crate::session_manager::content::{self, BlockContent};
@@ -14,6 +15,45 @@ pub async fn list_sessions() -> Result<Vec<session_manager::SessionMeta>, String
         .await
         .map_err(|e| format!("Failed to scan sessions: {e}"))?;
     Ok(sessions)
+}
+
+#[tauri::command]
+pub fn get_codex_session_routes(
+) -> Result<std::collections::BTreeMap<String, crate::mode::state::SessionRoute>, String> {
+    session_route::routes(&crate::live::engine::DeviceStore::for_device())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn list_codex_session_models(
+    state: tauri::State<'_, crate::store::AppState>,
+) -> Result<Vec<session_route::CodexSessionModelTarget>, String> {
+    session_route::model_targets(&state.db).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn set_codex_session_route(
+    state: tauri::State<'_, crate::store::AppState>,
+    #[allow(non_snake_case)] sessionId: String,
+    #[allow(non_snake_case)] providerId: String,
+    #[allow(non_snake_case)] upstreamModel: String,
+) -> Result<(), String> {
+    session_route::set_route(
+        &state.db,
+        &crate::live::engine::DeviceStore::for_device(),
+        &sessionId,
+        &providerId,
+        &upstreamModel,
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn clear_codex_session_route(
+    #[allow(non_snake_case)] sessionId: String,
+) -> Result<(), String> {
+    session_route::clear_route(&crate::live::engine::DeviceStore::for_device(), &sessionId)
+        .map_err(|error| error.to_string())
 }
 
 /// 一次性返回全部消息（兼容旧前端；「复制整段」等一次性场景也用它）。走解析缓存。
@@ -210,20 +250,65 @@ pub async fn delete_session(
     let session_id = sessionId.clone();
     let source_path = sourcePath.clone();
 
-    tauri::async_runtime::spawn_blocking(move || {
+    let deleted = tauri::async_runtime::spawn_blocking(move || {
         session_manager::delete_session(&provider_id, &session_id, &source_path)
     })
     .await
-    .map_err(|e| format!("Failed to delete session: {e}"))?
+    .map_err(|e| format!("Failed to delete session: {e}"))??;
+    if deleted {
+        clear_balanced_session_for_deleted_source(&providerId, &sessionId);
+    }
+    if deleted && providerId == "codex" {
+        if let Err(error) =
+            session_route::clear_route(&crate::live::engine::DeviceStore::for_device(), &sessionId)
+        {
+            log::warn!("Failed to clear the deleted Codex session route: {error}");
+        }
+    }
+    Ok(deleted)
+}
+
+fn clear_balanced_session_for_deleted_source(provider_id: &str, session_id: &str) {
+    if !matches!(provider_id, "claude" | "codex" | "claude-desktop") {
+        return;
+    }
+    let session_id = if provider_id == "codex" {
+        session_id.strip_prefix("codex_").unwrap_or(session_id)
+    } else {
+        session_id
+    };
+    if let Err(error) = crate::mode::state::clear_balanced_sessions_for_session(
+        &crate::live::engine::DeviceStore::for_device(),
+        provider_id,
+        session_id,
+    ) {
+        log::warn!(
+            "Failed to clear balancing assignments for deleted {provider_id} session {session_id}: {error}"
+        );
+    }
 }
 
 #[tauri::command]
 pub async fn delete_sessions(
     items: Vec<session_manager::DeleteSessionRequest>,
 ) -> Result<Vec<session_manager::DeleteSessionOutcome>, String> {
-    tauri::async_runtime::spawn_blocking(move || session_manager::delete_sessions(&items))
-        .await
-        .map_err(|e| format!("Failed to delete sessions: {e}"))
+    let outcomes =
+        tauri::async_runtime::spawn_blocking(move || session_manager::delete_sessions(&items))
+            .await
+            .map_err(|e| format!("Failed to delete sessions: {e}"))?;
+    let store = crate::live::engine::DeviceStore::for_device();
+    for outcome in outcomes.iter().filter(|item| item.success) {
+        clear_balanced_session_for_deleted_source(&outcome.provider_id, &outcome.session_id);
+        if outcome.provider_id == "codex" {
+            if let Err(error) = session_route::clear_route(&store, &outcome.session_id) {
+                log::warn!(
+                    "Failed to clear the deleted Codex session route {}: {error}",
+                    outcome.session_id
+                );
+            }
+        }
+    }
+    Ok(outcomes)
 }
 
 /// 把会话导出为 Markdown 文件：由后端弹出保存对话框并写入。写入路径只能是用户在

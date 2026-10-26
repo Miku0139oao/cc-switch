@@ -1488,3 +1488,17 @@ fn migration_v22_to_v23_adds_enabled_omp_to_mcp_servers_only() {
         .expect("read mcp row");
     assert_eq!((pi, omp), (1, 0));
 }
+
+#[test]
+fn migration_v23_to_v24_adds_aggregation_fallback_events() {
+    let conn = Connection::open_in_memory().expect("open memory db");
+    Database::create_tables_on_conn(&conn).expect("create tables");
+    conn.execute_batch("DROP TABLE stack_fallback_events;")
+        .expect("rewind fallback events table");
+    Database::set_user_version(&conn, 23).expect("set user_version=23");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("apply migrations");
+
+    assert_eq!(Database::get_user_version(&conn).unwrap(), SCHEMA_VERSION);
+    assert!(Database::table_exists(&conn, "stack_fallback_events").unwrap());
+}

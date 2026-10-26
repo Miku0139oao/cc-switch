@@ -14,7 +14,7 @@ use super::{
         carries_encrypted_agent_task, detect_opaque_state_rejection, rectify_opaque_state,
         unreadable_agent_task_error, OpaqueStateRejection,
     },
-    provider_router::ProviderRouter,
+    provider_router::{ProviderRouter, StackLoadGuard},
     providers::{
         codex_chat_history::CodexChatHistoryStore, gemini_shadow::GeminiShadowStore, get_adapter,
         AuthInfo, AuthStrategy, ProviderAdapter, ProviderType,
@@ -27,11 +27,13 @@ use super::{
     ProxyError,
 };
 use crate::commands::{CodexOAuthState, CopilotAuthState, XaiOAuthState};
+use crate::mode::stack::StackBalanceContext;
 use crate::proxy::providers::copilot_auth::{CopilotAuthError, CopilotAuthManager};
 use crate::proxy::providers::copilot_model_map::{
     CopilotProtocol, CopilotTransport, ResolvedCopilotModel,
 };
 use crate::proxy::providers::xai_oauth_auth::XaiOAuthManager;
+use crate::services::UsageCache;
 use crate::{
     app_config::AppType,
     provider::{CodexCopilotApiFormat, LocalProxyRequestOverrides, Provider},
@@ -294,6 +296,8 @@ pub struct ForwardResult {
     /// 活跃连接 RAII guard：随响应一起流转到 response_processor / handle_claude_transform，
     /// 最终被 move 进流式 body future（或非流式响应作用域），覆盖整个响应生命周期。
     pub(crate) connection_guard: Option<ActiveConnectionGuard>,
+    /// Per-provider balancing load guard with the same response lifetime.
+    pub(crate) stack_load_guard: Option<StackLoadGuard>,
 }
 
 pub struct ForwardError {
@@ -312,7 +316,8 @@ pub struct ForwardError {
 /// `active_connections` 计数过早归零。RAII guard 让"减量"由 Rust 类型系统驱动，
 /// 不需要每条出口路径都手动调用。
 pub(crate) struct ActiveConnectionGuard {
-    status: Arc<RwLock<ProxyStatus>>,
+    status: Option<Arc<RwLock<ProxyStatus>>>,
+    stack_load: Option<StackLoadGuard>,
 }
 
 impl ActiveConnectionGuard {
@@ -321,14 +326,19 @@ impl ActiveConnectionGuard {
             let mut s = status.write().await;
             s.active_connections = s.active_connections.saturating_add(1);
         }
-        Self { status }
+        Self {
+            status: Some(status),
+            stack_load: None,
+        }
     }
 }
 
 impl Drop for ActiveConnectionGuard {
     fn drop(&mut self) {
         // Drop 不能 await：把减量操作调度到 tokio runtime
-        let status = self.status.clone();
+        let Some(status) = self.status.clone() else {
+            return;
+        };
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 let mut s = status.write().await;
@@ -342,6 +352,8 @@ impl Drop for ActiveConnectionGuard {
 pub struct RequestForwarder {
     /// 共享的 ProviderRouter（持有熔断器状态）
     router: Arc<ProviderRouter>,
+    /// Last-known quota limits and short-lived runtime 429 exhaustion markers.
+    usage_cache: Arc<UsageCache>,
     status: Arc<RwLock<ProxyStatus>>,
     current_providers: Arc<RwLock<std::collections::HashMap<String, (String, String)>>>,
     gemini_shadow: Arc<GeminiShadowStore>,
@@ -372,9 +384,16 @@ pub struct RequestForwarder {
     /// `max_attempts = max_retries + 1`，所以 max_retries=0 表示仅尝试一家、
     /// max_retries=3（默认）表示最多 4 家。loop 同时受 providers.len() 自然限制。
     max_attempts: usize,
+    /// 该应用是否启用了路由故障转移。用于区分“单家模式”和“有队列但没有可用下一家”。
+    failover_enabled: bool,
     /// Stack 模型的请求（`mode::stack`）：挂在结构体上，整流器重试再次调用 `forward()` 时照样
     /// 生效。见 [`Self::routing_state_enabled`]。
     stack_request: bool,
+    /// Upstream model override for each Stack attempt, aligned with the
+    /// provider list. Empty for ordinary routed requests.
+    stack_attempt_models: Vec<String>,
+    /// Automatic first attempt chosen for this aggregated-model session.
+    stack_balance: Option<StackBalanceContext>,
 }
 
 impl RequestForwarder {
@@ -450,6 +469,7 @@ impl RequestForwarder {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         router: Arc<ProviderRouter>,
+        usage_cache: Arc<UsageCache>,
         non_streaming_timeout: u64,
         status: Arc<RwLock<ProxyStatus>>,
         current_providers: Arc<RwLock<std::collections::HashMap<String, (String, String)>>>,
@@ -472,6 +492,7 @@ impl RequestForwarder {
         let max_attempts = (max_retries as usize).saturating_add(1);
         Self {
             router,
+            usage_cache,
             status,
             current_providers,
             gemini_shadow,
@@ -489,7 +510,10 @@ impl RequestForwarder {
                 streaming_first_byte_timeout,
             ),
             max_attempts,
+            failover_enabled: false,
             stack_request: false,
+            stack_attempt_models: Vec::new(),
+            stack_balance: None,
         }
     }
 
@@ -499,11 +523,32 @@ impl RequestForwarder {
         self
     }
 
+    pub fn failover_enabled(mut self, failover_enabled: bool) -> Self {
+        self.failover_enabled = failover_enabled;
+        self
+    }
+
+    pub fn stack_attempt_models(mut self, models: Vec<String>) -> Self {
+        self.stack_attempt_models = models;
+        self
+    }
+
+    pub fn stack_balance(mut self, balance: Option<StackBalanceContext>) -> Self {
+        self.stack_balance = balance;
+        self
+    }
+
     /// 这个请求读写路由状态吗：熔断器（许可、结果、健康度）、「正在使用」、代理统计
     /// （总数、成功率、故障转移次数、最近错误、活跃连接）、故障转移切换。Stack 模型的请求
     /// 和普通路由完全分开，一律不碰；只有用量日志照常按供应商记。以后新增路由状态也先问它。
     fn routing_state_enabled(&self) -> bool {
         !self.stack_request
+    }
+
+    /// Stack fallback chains reuse provider health/circuit breakers even though
+    /// they deliberately avoid global route, status and failover mutation.
+    fn provider_health_enabled(&self) -> bool {
+        self.routing_state_enabled() || self.stack_attempt_models.len() > 1
     }
 
     /// 请求体里的模型名已经是这家的上游名（Stack 模型的请求）：不按角色映射、不换成行里配置
@@ -546,6 +591,24 @@ impl RequestForwarder {
         });
     }
 
+    async fn record_health_result(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+        success: bool,
+        error_msg: Option<String>,
+    ) {
+        if let Err(error) = self
+            .router
+            .record_health_result(provider_id, app_type, success, error_msg)
+            .await
+        {
+            log::warn!(
+                "[{app_type}] 记录 Provider 健康状态失败: provider_id={provider_id}, error={error}"
+            );
+        }
+    }
+
     /// 整流（thinking signature 或 budget）重试失败后的统一收尾。
     ///
     /// `None` 表示已记录熔断器、累积 `last_error`/`last_provider`，
@@ -559,6 +622,7 @@ impl RequestForwarder {
         provider: &Provider,
         app_type_str: &str,
         used_half_open_permit: bool,
+        track_circuit_breaker: bool,
         rectifier_label: &str,
         last_error: &mut Option<ProxyError>,
         last_provider: &mut Option<Provider>,
@@ -576,6 +640,7 @@ impl RequestForwarder {
                 provider,
                 app_type_str,
                 used_half_open_permit,
+                track_circuit_breaker,
                 &retry_err,
                 format!(
                     "Provider {} {rectifier_label}重试失败: {}",
@@ -597,7 +662,7 @@ impl RequestForwarder {
     // 一次尝试和一个客户端请求的收尾记账（熔断器、「正在使用」、代理统计、故障转移切换）
     // 都经下面这几个方法，不在重试循环里直接写。
 
-    /// 开始尝试一家：界面上显示正在尝试哪家。
+    /// 开始尝试一家：界面上显示正在尝试哪家。聚合請求刻意不更新（路由統計隔離）。
     async fn note_attempt(&self, provider: &Provider) {
         if !self.routing_state_enabled() {
             return;
@@ -605,6 +670,23 @@ impl RequestForwarder {
         let mut status = self.status.write().await;
         status.current_provider = Some(provider.name.clone());
         status.current_provider_id = Some(provider.id.clone());
+    }
+
+    fn clear_balance_after_retryable_failure(
+        &self,
+        app_type: &AppType,
+        provider: &Provider,
+        attempt_index: usize,
+        stack_load_guard: &mut Option<StackLoadGuard>,
+    ) {
+        drop(stack_load_guard.take());
+        if let (Some(context), Some(model)) = (
+            self.stack_balance.as_ref(),
+            self.stack_attempt_models.get(attempt_index),
+        ) {
+            self.router
+                .clear_stack_balance_on_failure(app_type, context, &provider.id, model);
+        }
     }
 
     /// 请求成功：记熔断器成功，更新「正在使用」和成功统计。实际用的不是请求开始时那家，
@@ -628,8 +710,13 @@ impl RequestForwarder {
             codex_upstream_format,
             outbound_model,
             connection_guard: None,
+            stack_load_guard: None,
         };
         if !self.routing_state_enabled() {
+            if self.provider_health_enabled() {
+                self.record_success_result(&provider.id, app_type_str, used_half_open_permit)
+                    .await;
+            }
             return result;
         }
 
@@ -674,23 +761,37 @@ impl RequestForwarder {
         provider: &Provider,
         app_type_str: &str,
         used_half_open_permit: bool,
+        track_circuit_breaker: bool,
         error: &ProxyError,
         last_error: String,
     ) {
-        if !self.routing_state_enabled() {
+        if proxy_error_class(error) == "quota_exhausted" {
+            if let Ok(app_type) = app_type_str.parse::<AppType>() {
+                self.usage_cache
+                    .mark_runtime_quota_exhausted(&app_type, &provider.id);
+            }
+        }
+        if !self.provider_health_enabled() {
             return;
         }
-        let _ = self
-            .router
-            .record_result(
-                &provider.id,
-                app_type_str,
-                used_half_open_permit,
-                false,
-                Some(error.to_string()),
-            )
-            .await;
-        self.status.write().await.last_error = Some(last_error);
+        if track_circuit_breaker {
+            let _ = self
+                .router
+                .record_result(
+                    &provider.id,
+                    app_type_str,
+                    used_half_open_permit,
+                    false,
+                    Some(error.to_string()),
+                )
+                .await;
+        } else {
+            self.record_health_result(&provider.id, app_type_str, false, Some(error.to_string()))
+                .await;
+        }
+        if self.routing_state_enabled() {
+            self.status.write().await.last_error = Some(last_error);
+        }
     }
 
     /// 不计入熔断的失败（客户端错误、整流后仍被拒）：只释放 HalfOpen 名额，这个请求记为失败。
@@ -701,10 +802,12 @@ impl RequestForwarder {
         app_type_str: &str,
         used_half_open_permit: bool,
     ) -> ForwardError {
-        if self.routing_state_enabled() {
+        if self.provider_health_enabled() {
             self.router
                 .release_permit_neutral(&provider.id, app_type_str, used_half_open_permit)
                 .await;
+        }
+        if self.routing_state_enabled() {
             self.record_failed_request(error.to_string()).await;
         }
         ForwardError {
@@ -741,31 +844,73 @@ impl RequestForwarder {
         extensions: Extensions,
         providers: Vec<Provider>,
     ) -> Result<ForwardResult, ForwardError> {
-        if !self.routing_state_enabled() {
-            return self
-                .forward_with_retry_inner(
-                    app_type, method, endpoint, body, headers, extensions, providers,
-                )
-                .await;
-        }
-        let guard = ActiveConnectionGuard::acquire(self.status.clone()).await;
-        {
-            let mut s = self.status.write().await;
-            s.total_requests = s.total_requests.saturating_add(1);
-            s.last_request_at = Some(chrono::Utc::now().to_rfc3339());
-        }
+        // 聚合請求刻意不碰路由統計（total / success / failed / 目前供應商 / 活躍連線）：
+        // `stacked_requests_leave_every_routing_state_alone` 把這條隔離鎖住了。
+        // 聚合的可觀察性走用量日誌與聚合診斷面板，不在 ProxyStatus 裡。
+        let connection_guard = if self.routing_state_enabled() {
+            let guard = ActiveConnectionGuard::acquire(self.status.clone()).await;
+            {
+                let mut s = self.status.write().await;
+                s.total_requests = s.total_requests.saturating_add(1);
+                s.last_request_at = Some(chrono::Utc::now().to_rfc3339());
+            }
+            Some(guard)
+        } else {
+            None
+        };
+        let stack_attempt_providers = providers
+            .iter()
+            .map(|provider| provider.id.clone())
+            .collect::<Vec<_>>();
         let result = self
             .forward_with_retry_inner(
                 app_type, method, endpoint, body, headers, extensions, providers,
             )
             .await;
-        // 把 guard 注入到 Ok 结果，让它随响应一起流转到 response_processor，
-        // 在流式 body 的 future 内才真正 drop。
-        // Err 路径：guard 在函数 scope 内随返回值落地时自动 drop。
-        result.map(|mut fr| {
-            fr.connection_guard = Some(guard);
-            fr
-        })
+        match result {
+            Ok(mut forwarded) => {
+                if let Some(context) = self.stack_balance.as_ref() {
+                    let model = forwarded
+                        .outbound_model
+                        .clone()
+                        .or_else(|| {
+                            self.stack_attempt_model(
+                                &stack_attempt_providers,
+                                &forwarded.provider.id,
+                            )
+                        })
+                        .unwrap_or_default();
+                    self.router.confirm_stack_balance_success(
+                        app_type,
+                        context,
+                        &forwarded.provider.id,
+                        &model,
+                    );
+                }
+                let stack_load = forwarded.stack_load_guard.take();
+                let mut lifecycle_guard = connection_guard;
+                if let Some(stack_load) = stack_load {
+                    if let Some(guard) = lifecycle_guard.as_mut() {
+                        guard.stack_load = Some(stack_load);
+                    } else {
+                        lifecycle_guard = Some(ActiveConnectionGuard {
+                            status: None,
+                            stack_load: Some(stack_load),
+                        });
+                    }
+                }
+                forwarded.connection_guard = lifecycle_guard;
+                Ok(forwarded)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn stack_attempt_model(&self, provider_ids: &[String], provider_id: &str) -> Option<String> {
+        self.stack_attempt_models
+            .iter()
+            .zip(provider_ids)
+            .find_map(|(model, id)| (id == provider_id).then(|| model.clone()))
     }
 
     /// 实际转发逻辑（不包含客户端维度的入口/出口计数）
@@ -810,10 +955,11 @@ impl RequestForwarder {
         let mut attempted_providers = 0usize;
 
         // 单 Provider 场景下跳过熔断器检查（故障转移关闭时）；Stack 模型的请求不碰熔断器。
-        let bypass_circuit_breaker = providers.len() == 1 || !self.routing_state_enabled();
+        let bypass_circuit_breaker = providers.len() == 1;
+        let track_circuit_breaker = !bypass_circuit_breaker;
 
         // 依次尝试每个供应商
-        for provider in providers.iter() {
+        for (attempt_index, provider) in providers.iter().enumerate() {
             // 整流器重试标记：每个 provider 独立持有，避免标记跨 provider 短路故障转移
             // —— 首家 provider 整流后被 5xx/timeout 击落时，下家仍能用整流后的请求体走整流流程
             let mut rectifier_retried = false;
@@ -863,8 +1009,15 @@ impl RequestForwarder {
                 } else {
                     body.clone()
                 };
+            if let Some(model) = self.stack_attempt_models.get(attempt_index) {
+                provider_body["model"] = Value::String(model.clone());
+            }
 
             attempted_providers += 1;
+            let mut stack_load_guard = self.stack_balance.as_ref().map(|context| {
+                self.router
+                    .begin_stack_load(app_type_str, &provider.id, Some(context))
+            });
 
             // 更新状态中的当前 Provider 信息（per-attempt 维度的标识）
             //
@@ -890,7 +1043,7 @@ impl RequestForwarder {
                 .await
             {
                 Ok(forwarded) => {
-                    return Ok(self
+                    let mut result = self
                         .finish_success(
                             provider,
                             app_type_str,
@@ -898,7 +1051,12 @@ impl RequestForwarder {
                             forwarded,
                             attempted_codex_upstream_format,
                         )
-                        .await);
+                        .await;
+                    if let Some(mut guard) = stack_load_guard.take() {
+                        guard.record_success();
+                        result.stack_load_guard = Some(guard);
+                    }
+                    return Ok(result);
                 }
                 Err(mut e) => {
                     // 检测是否需要触发整流器（仅 Claude/ClaudeAuth 供应商）
@@ -953,7 +1111,7 @@ impl RequestForwarder {
                                     log::info!(
                                         "[{app_type_str}] [Media] Unsupported-image retry succeeded"
                                     );
-                                    return Ok(self
+                                    let mut result = self
                                         .finish_success(
                                             provider,
                                             app_type_str,
@@ -961,7 +1119,12 @@ impl RequestForwarder {
                                             forwarded,
                                             media_retry_codex_upstream_format,
                                         )
-                                        .await);
+                                        .await;
+                                    if let Some(mut guard) = stack_load_guard.take() {
+                                        guard.record_success();
+                                        result.stack_load_guard = Some(guard);
+                                    }
+                                    return Ok(result);
                                 }
                                 Err(retry_err) => {
                                     log::warn!(
@@ -973,6 +1136,7 @@ impl RequestForwarder {
                                             provider,
                                             app_type_str,
                                             used_half_open_permit,
+                                            track_circuit_breaker,
                                             "media 降级",
                                             &mut last_error,
                                             &mut last_provider,
@@ -981,6 +1145,12 @@ impl RequestForwarder {
                                     {
                                         return Err(err);
                                     }
+                                    self.clear_balance_after_retryable_failure(
+                                        app_type,
+                                        provider,
+                                        attempt_index,
+                                        &mut stack_load_guard,
+                                    );
                                     continue;
                                 }
                             }
@@ -1042,7 +1212,7 @@ impl RequestForwarder {
                             {
                                 Ok(forwarded) => {
                                     log::info!("[{app_type_str}] [RECT-021] 密文整流重试成功");
-                                    return Ok(self
+                                    let mut result = self
                                         .finish_success(
                                             provider,
                                             app_type_str,
@@ -1050,7 +1220,12 @@ impl RequestForwarder {
                                             forwarded,
                                             opaque_retry_codex_upstream_format,
                                         )
-                                        .await);
+                                        .await;
+                                    if let Some(mut guard) = stack_load_guard.take() {
+                                        guard.record_success();
+                                        result.stack_load_guard = Some(guard);
+                                    }
+                                    return Ok(result);
                                 }
                                 // 重试仍失败：按这次的错误走常规分类，和没整流过一样
                                 // 决定是否计入熔断、是否换下一家。
@@ -1148,7 +1323,7 @@ impl RequestForwarder {
                                 {
                                     Ok(forwarded) => {
                                         log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
-                                        return Ok(self
+                                        let mut result = self
                                             .finish_success(
                                                 provider,
                                                 app_type_str,
@@ -1156,7 +1331,12 @@ impl RequestForwarder {
                                                 forwarded,
                                                 signature_retry_codex_upstream_format,
                                             )
-                                            .await);
+                                            .await;
+                                        if let Some(mut guard) = stack_load_guard.take() {
+                                            guard.record_success();
+                                            result.stack_load_guard = Some(guard);
+                                        }
+                                        return Ok(result);
                                     }
                                     Err(retry_err) => {
                                         log::warn!(
@@ -1168,6 +1348,7 @@ impl RequestForwarder {
                                                 provider,
                                                 app_type_str,
                                                 used_half_open_permit,
+                                                track_circuit_breaker,
                                                 "整流",
                                                 &mut last_error,
                                                 &mut last_provider,
@@ -1176,6 +1357,12 @@ impl RequestForwarder {
                                         {
                                             return Err(err);
                                         }
+                                        self.clear_balance_after_retryable_failure(
+                                            app_type,
+                                            provider,
+                                            attempt_index,
+                                            &mut stack_load_guard,
+                                        );
                                         continue;
                                     }
                                 }
@@ -1247,7 +1434,7 @@ impl RequestForwarder {
                             {
                                 Ok(forwarded) => {
                                     log::info!("[{app_type_str}] [RECT-011] budget 整流重试成功");
-                                    return Ok(self
+                                    let mut result = self
                                         .finish_success(
                                             provider,
                                             app_type_str,
@@ -1255,7 +1442,12 @@ impl RequestForwarder {
                                             forwarded,
                                             budget_retry_codex_upstream_format,
                                         )
-                                        .await);
+                                        .await;
+                                    if let Some(mut guard) = stack_load_guard.take() {
+                                        guard.record_success();
+                                        result.stack_load_guard = Some(guard);
+                                    }
+                                    return Ok(result);
                                 }
                                 Err(retry_err) => {
                                     log::warn!(
@@ -1267,6 +1459,7 @@ impl RequestForwarder {
                                             provider,
                                             app_type_str,
                                             used_half_open_permit,
+                                            track_circuit_breaker,
                                             "budget 整流",
                                             &mut last_error,
                                             &mut last_provider,
@@ -1275,6 +1468,12 @@ impl RequestForwarder {
                                     {
                                         return Err(err);
                                     }
+                                    self.clear_balance_after_retryable_failure(
+                                        app_type,
+                                        provider,
+                                        attempt_index,
+                                        &mut stack_load_guard,
+                                    );
                                     continue;
                                 }
                             }
@@ -1295,30 +1494,70 @@ impl RequestForwarder {
                     // 先分类错误，决定是否计入 provider 健康度
                     // —— NonRetryable / ClientAbort 是客户端层错误，无论换哪家 provider 都会被拒绝，
                     //    不应污染熔断器和数据库健康度（与 release_permit_neutral 同语义）。
-                    let category = self.categorize_proxy_error(&e, provider);
+                    let category = if self.stack_request && self.stack_attempt_models.len() > 1 {
+                        self.categorize_stack_fallback_error(&e)
+                    } else {
+                        self.categorize_proxy_error(&e, provider)
+                    };
 
                     match category {
                         ErrorCategory::Retryable => {
                             // 可重试：真正的 provider 故障 → 记录失败并更新熔断器/DB 健康度
+                            self.clear_balance_after_retryable_failure(
+                                app_type,
+                                provider,
+                                attempt_index,
+                                &mut stack_load_guard,
+                            );
                             self.record_provider_failure(
                                 provider,
                                 app_type_str,
                                 used_half_open_permit,
+                                track_circuit_breaker,
                                 &e,
                                 format!("Provider {} 失败: {}", provider.name, e),
                             )
                             .await;
 
+                            let will_retry = attempt_index + 1 < providers.len()
+                                && attempted_providers < self.max_attempts;
                             let (log_code, log_message) = build_retryable_failure_log(
                                 &provider.name,
                                 attempted_providers,
                                 providers.len(),
+                                will_retry,
+                                self.failover_enabled,
+                                self.stack_request,
                                 &e,
                             );
                             log::warn!("[{app_type_str}] [{log_code}] {log_message}");
 
                             last_error = Some(e);
                             last_provider = Some(provider.clone());
+                            if will_retry
+                                && self.stack_request
+                                && self.stack_attempt_models.len() > 1
+                                && attempt_index + 1 < providers.len()
+                            {
+                                let next = &providers[attempt_index + 1];
+                                let next_model = self
+                                    .stack_attempt_models
+                                    .get(attempt_index + 1)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                self.router.record_stack_fallback_event(
+                                    &self.session_id,
+                                    app_type_str,
+                                    self.stack_attempt_models
+                                        .first()
+                                        .map_or("unknown", String::as_str),
+                                    attempt_index,
+                                    &provider.id,
+                                    &next.id,
+                                    &next_model,
+                                    proxy_error_class(last_error.as_ref().expect("set above")),
+                                );
+                            }
                             // 继续尝试下一个供应商
                             continue;
                         }
@@ -3351,6 +3590,24 @@ impl RequestForwarder {
             _ => ErrorCategory::NonRetryable,
         }
     }
+
+    /// Aggregated-model fallback is intentionally narrower than route-mode
+    /// failover. Authentication, authorization, model-not-found and malformed
+    /// request errors do not move the request to another billed account.
+    fn categorize_stack_fallback_error(&self, error: &ProxyError) -> ErrorCategory {
+        match error {
+            ProxyError::Timeout(_)
+            | ProxyError::ForwardFailed(_)
+            | ProxyError::StreamIdleTimeout(_)
+            | ProxyError::ProviderUnhealthy(_) => ErrorCategory::Retryable,
+            ProxyError::UpstreamError { status, .. } => match *status {
+                408 | 409 | 425 | 429 => ErrorCategory::Retryable,
+                value if value >= 500 => ErrorCategory::Retryable,
+                _ => ErrorCategory::NonRetryable,
+            },
+            _ => ErrorCategory::NonRetryable,
+        }
+    }
 }
 
 /// 从 ProxyError 中提取错误消息
@@ -3359,6 +3616,34 @@ fn extract_error_message(error: &ProxyError) -> Option<String> {
         ProxyError::UpstreamError { body, .. } => body.clone(),
         _ => Some(error.to_string()),
     }
+}
+
+fn proxy_error_class(error: &ProxyError) -> &'static str {
+    match error {
+        ProxyError::Timeout(_) => "timeout",
+        ProxyError::ForwardFailed(_) => "transport",
+        ProxyError::StreamIdleTimeout(_) => "stream_idle_timeout",
+        ProxyError::ProviderUnhealthy(_) => "provider_unhealthy",
+        ProxyError::UpstreamError { status: 429, body }
+            if body.as_deref().is_some_and(is_quota_exhaustion_message) =>
+        {
+            "quota_exhausted"
+        }
+        ProxyError::UpstreamError { status, .. } if *status == 429 => "rate_limit",
+        ProxyError::UpstreamError { status, .. } if *status >= 500 => "upstream_5xx",
+        ProxyError::UpstreamError { .. } => "upstream",
+        _ => "other",
+    }
+}
+
+fn is_quota_exhaustion_message(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    lower.contains("usage limit")
+        || lower.contains("usage_limit")
+        || lower.contains("gousagelimiterror")
+        || lower.contains("quota exceeded")
+        || lower.contains("insufficient_user_quota")
+        || lower.contains("quota exhausted")
 }
 
 /// 检测 Provider 是否为 Bedrock（通过 CLAUDE_CODE_USE_BEDROCK 环境变量判断）
@@ -3383,20 +3668,42 @@ fn build_retryable_failure_log(
     provider_name: &str,
     attempted_providers: usize,
     total_providers: usize,
+    will_retry: bool,
+    failover_enabled: bool,
+    stack_request: bool,
     error: &ProxyError,
 ) -> (&'static str, String) {
     let error_summary = summarize_proxy_error(error);
 
-    if total_providers <= 1 {
-        (
-            log_fwd::SINGLE_PROVIDER_FAILED,
-            format!("Provider {provider_name} 请求失败: {error_summary}"),
-        )
-    } else {
+    if will_retry {
         (
             log_fwd::PROVIDER_FAILED_RETRY,
             format!(
                 "Provider {provider_name} 失败，继续尝试下一个 ({attempted_providers}/{total_providers}): {error_summary}"
+            ),
+        )
+    } else if !failover_enabled {
+        let reason = if stack_request {
+            "此聚合模型未配置 fallback"
+        } else {
+            "故障转移未启用"
+        };
+        (
+            log_fwd::SINGLE_PROVIDER_FAILED,
+            format!(
+                "Provider {provider_name} 请求失败，{reason}，本次请求没有备用 Provider: {error_summary}"
+            ),
+        )
+    } else {
+        let fallback_kind = if stack_request {
+            "聚合 fallback 链"
+        } else {
+            "fallback 队列"
+        };
+        (
+            log_fwd::NO_AVAILABLE_FAILOVER,
+            format!(
+                "Provider {provider_name} 请求失败，但没有可用的下一个 Provider（已尝试 {attempted_providers}/{total_providers}；请检查 {fallback_kind}、熔断状态或重试上限）: {error_summary}"
             ),
         )
     }
@@ -4745,6 +5052,7 @@ mod tests {
 
         RequestForwarder {
             router: Arc::new(ProviderRouter::new(db.clone())),
+            usage_cache: Arc::new(UsageCache::new()),
             status: Arc::new(RwLock::new(ProxyStatus::default())),
             current_providers: Arc::new(RwLock::new(HashMap::new())),
             gemini_shadow: Arc::new(GeminiShadowStore::new()),
@@ -4760,7 +5068,10 @@ mod tests {
             non_streaming_timeout,
             streaming_first_byte_timeout,
             max_attempts: 1,
+            failover_enabled: false,
             stack_request: false,
+            stack_attempt_models: Vec::new(),
+            stack_balance: None,
         }
     }
 
@@ -4804,16 +5115,72 @@ mod tests {
     }
 
     #[test]
+    fn stack_fallback_only_retries_availability_errors() {
+        let forwarder = test_forwarder(Duration::ZERO, Duration::ZERO);
+        for retryable in [
+            ProxyError::Timeout("timeout".to_string()),
+            ProxyError::ForwardFailed("network".to_string()),
+            ProxyError::StreamIdleTimeout(120),
+            ProxyError::UpstreamError {
+                status: 429,
+                body: None,
+            },
+            ProxyError::UpstreamError {
+                status: 503,
+                body: None,
+            },
+        ] {
+            assert_eq!(
+                forwarder.categorize_stack_fallback_error(&retryable),
+                ErrorCategory::Retryable,
+                "{retryable:?}"
+            );
+        }
+        for blocked in [
+            ProxyError::UpstreamError {
+                status: 400,
+                body: None,
+            },
+            ProxyError::UpstreamError {
+                status: 401,
+                body: None,
+            },
+            ProxyError::UpstreamError {
+                status: 403,
+                body: None,
+            },
+            ProxyError::UpstreamError {
+                status: 404,
+                body: None,
+            },
+            ProxyError::UpstreamError {
+                status: 422,
+                body: None,
+            },
+            ProxyError::ConfigError("bad config".to_string()),
+        ] {
+            assert_eq!(
+                forwarder.categorize_stack_fallback_error(&blocked),
+                ErrorCategory::NonRetryable,
+                "{blocked:?}"
+            );
+        }
+    }
+
+    #[test]
     fn single_provider_retryable_log_uses_single_provider_code() {
         let error = ProxyError::UpstreamError {
             status: 429,
             body: Some(r#"{"error":{"message":"rate limit exceeded"}}"#.to_string()),
         };
 
-        let (code, message) = build_retryable_failure_log("PackyCode-response", 1, 1, &error);
+        let (code, message) =
+            build_retryable_failure_log("PackyCode-response", 1, 1, false, false, false, &error);
 
         assert_eq!(code, log_fwd::SINGLE_PROVIDER_FAILED);
         assert!(message.contains("Provider PackyCode-response 请求失败"));
+        assert!(message.contains("故障转移未启用"));
+        assert!(message.contains("没有备用 Provider"));
         assert!(message.contains("上游 HTTP 429"));
         // 上游错误消息保留(截断)，用于诊断失败原因。
         assert!(message.contains("rate limit exceeded"));
@@ -4824,11 +5191,71 @@ mod tests {
     fn multi_provider_retryable_log_keeps_failover_wording() {
         let error = ProxyError::Timeout("upstream timed out after 30s".to_string());
 
-        let (code, message) = build_retryable_failure_log("primary", 1, 3, &error);
+        let (code, message) =
+            build_retryable_failure_log("primary", 1, 3, true, true, false, &error);
 
         assert_eq!(code, log_fwd::PROVIDER_FAILED_RETRY);
         assert!(message.contains("继续尝试下一个 (1/3)"));
         assert!(message.contains("请求超时"));
+    }
+
+    #[test]
+    fn failover_enabled_without_a_next_attempt_uses_no_available_failover_code() {
+        let error = ProxyError::UpstreamError {
+            status: 429,
+            body: Some(r#"{"error":{"message":"Go usage limit exceeded"}}"#.to_string()),
+        };
+
+        let (code, message) =
+            build_retryable_failure_log("OpenCode Go", 1, 1, false, true, false, &error);
+
+        assert_eq!(code, log_fwd::NO_AVAILABLE_FAILOVER);
+        assert!(message.contains("没有可用的下一个 Provider"));
+        assert!(message.contains("fallback 队列"));
+        assert!(message.contains("Go usage limit exceeded"));
+        assert!(!message.contains("故障转移未启用"));
+    }
+
+    #[test]
+    fn stack_fallback_without_a_next_target_names_the_fallback_chain() {
+        let error = ProxyError::UpstreamError {
+            status: 429,
+            body: Some(r#"{"error":{"message":"Go usage limit exceeded"}}"#.to_string()),
+        };
+
+        let (code, message) =
+            build_retryable_failure_log("OpenCode Go", 1, 1, false, true, true, &error);
+
+        assert_eq!(code, log_fwd::NO_AVAILABLE_FAILOVER);
+        assert!(message.contains("聚合 fallback 链"));
+        assert!(!message.contains("fallback 队列"));
+    }
+
+    #[test]
+    fn last_provider_failure_does_not_claim_another_attempt() {
+        let error = ProxyError::ForwardFailed("connection reset".to_string());
+
+        let (code, message) =
+            build_retryable_failure_log("primary", 2, 2, false, true, false, &error);
+
+        assert_eq!(code, log_fwd::NO_AVAILABLE_FAILOVER);
+        assert!(!message.contains("继续尝试下一个"));
+        assert!(message.contains("已尝试 2/2"));
+    }
+
+    #[test]
+    fn proxy_error_class_distinguishes_quota_exhaustion_from_rate_limit() {
+        let quota = ProxyError::UpstreamError {
+            status: 429,
+            body: Some(r#"{"error":{"type":"GoUsageLimitError"}}"#.to_string()),
+        };
+        let rate_limit = ProxyError::UpstreamError {
+            status: 429,
+            body: Some(r#"{"error":{"message":"too many requests"}}"#.to_string()),
+        };
+
+        assert_eq!(proxy_error_class(&quota), "quota_exhausted");
+        assert_eq!(proxy_error_class(&rate_limit), "rate_limit");
     }
 
     #[test]
@@ -8138,6 +8565,66 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn usage_limit_429_fails_over_to_the_second_provider() {
+            let up1 = upstream(vec![error(429, "Go usage limit exceeded")]).await;
+            let up2 = upstream(vec![ok()]).await;
+            let fwd = forwarder(2, "p1").failover_enabled(true);
+
+            let result = send(
+                &fwd,
+                vec![provider("p1", &up1), provider("p2", &up2)],
+                plain_body(),
+            )
+            .await;
+
+            assert_eq!(result.ok().map(|r| r.provider.id), Some("p2".into()));
+            assert_eq!(
+                books(&fwd).await,
+                Books {
+                    total: 1,
+                    success: 1,
+                    failed: 0,
+                    success_rate: 100.0,
+                    failover_count: 1,
+                    last_error: None,
+                    attempting: Some("p2".into()),
+                    in_use: Some("p2".into()),
+                }
+            );
+            assert_eq!(breaker(&fwd, "p1").await, Some((1, 1)));
+            assert_eq!(breaker(&fwd, "p2").await, Some((1, 0)));
+            assert!(fwd.usage_cache.provider_quota_exhausted(
+                &AppType::Claude,
+                "p1",
+                chrono::Utc::now()
+            ));
+        }
+
+        #[tokio::test]
+        async fn stack_fallback_uses_each_attempts_own_model() {
+            let up1 = upstream(vec![error(503, "temporarily unavailable")]).await;
+            let up2 = upstream(vec![ok()]).await;
+            let fwd = forwarder(2, "p1")
+                .stack_request(true)
+                .stack_attempt_models(vec![
+                    "provider-one-model".to_string(),
+                    "provider-two-model".to_string(),
+                ])
+                .failover_enabled(true);
+
+            let result = send(
+                &fwd,
+                vec![provider("p1", &up1), provider("p2", &up2)],
+                plain_body(),
+            )
+            .await;
+
+            assert_eq!(result.ok().map(|r| r.provider.id), Some("p2".into()));
+            assert_eq!(up1.requests.lock().await[0]["model"], "provider-one-model");
+            assert_eq!(up2.requests.lock().await[0]["model"], "provider-two-model");
+        }
+
+        #[tokio::test]
         async fn non_retryable_error_is_neutral_for_the_breaker() {
             let up = upstream(vec![error(400, "bad request")]).await;
             let fwd = forwarder(1, "p1");
@@ -8159,6 +8646,21 @@ mod tests {
                 }
             );
             assert_eq!(breaker(&fwd, "p1").await, None);
+        }
+
+        #[tokio::test]
+        async fn single_provider_quota_failure_does_not_open_an_unusable_breaker() {
+            let up = upstream(vec![error(429, "Go usage limit exceeded")]).await;
+            let fwd = forwarder(1, "p1");
+
+            let err = expect_err(send(&fwd, vec![provider("p1", &up)], plain_body()).await);
+
+            assert!(matches!(
+                err.error,
+                ProxyError::UpstreamError { status: 429, .. }
+            ));
+            assert_eq!(breaker(&fwd, "p1").await, None);
+            assert_eq!(up.requests.lock().await.len(), 1);
         }
 
         #[tokio::test]
@@ -8299,7 +8801,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn signature_rectifier_retry_provider_error_counts_against_the_breaker() {
+        async fn single_provider_rectifier_retry_error_does_not_touch_the_breaker() {
             let up = upstream(vec![error(400, SIGNATURE_ERROR), error(502, "gateway")]).await;
             let fwd = forwarder(1, "p1");
 
@@ -8326,7 +8828,7 @@ mod tests {
                     in_use: None,
                 }
             );
-            assert_eq!(breaker(&fwd, "p1").await, Some((1, 1)));
+            assert_eq!(breaker(&fwd, "p1").await, None);
             assert_eq!(up.requests.lock().await.len(), 2);
         }
 

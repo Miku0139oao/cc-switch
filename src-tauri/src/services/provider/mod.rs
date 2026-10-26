@@ -80,8 +80,11 @@ fn desktop_needs_routing_error() -> AppError {
 }
 
 pub fn official_provider_supports_proxy_takeover(app_type: &AppType, provider: &Provider) -> bool {
-    matches!(app_type, AppType::Codex)
-        && crate::proxy::providers::is_codex_official_provider(provider)
+    // Official API keys and OAuth subscriptions are proxied like any other
+    // provider. Account-specific request validation still happens inside the
+    // adapter and must never reuse credentials across accounts.
+    let _ = (app_type, provider);
+    true
 }
 
 /// 统一会话开关变更后，立即按新开关状态重写当前官方 Codex 供应商的选路（关键字段），
@@ -299,8 +302,10 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
         let old_home = std::env::var_os("HOME");
+        let old_hermes_home = std::env::var_os("HERMES_HOME");
         std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
         std::env::set_var("HOME", temp.path());
+        std::env::set_var("HERMES_HOME", temp.path().join(".hermes"));
 
         let db = Arc::new(Database::memory().expect("in-memory database"));
         let state = AppState::new(db);
@@ -313,6 +318,10 @@ mod tests {
         match old_home {
             Some(value) => std::env::set_var("HOME", value),
             None => std::env::remove_var("HOME"),
+        }
+        match old_hermes_home {
+            Some(value) => std::env::set_var("HERMES_HOME", value),
+            None => std::env::remove_var("HERMES_HOME"),
         }
 
         result
@@ -4677,6 +4686,34 @@ wire_api = "responses"
     }
 
     #[test]
+    fn universal_drift_detection_only_cares_about_managed_fields() {
+        // json_subset：子卡多出來的欄位（同步會保留的 Agent 專屬設定）不算 drift。
+        assert!(json_subset(
+            &json!({"env": {"ANTHROPIC_MODEL": "a"}}),
+            &json!({"env": {"ANTHROPIC_MODEL": "a", "EXTRA": "1"}, "other": true})
+        ));
+        assert!(!json_subset(
+            &json!({"env": {"ANTHROPIC_MODEL": "a"}}),
+            &json!({"env": {"ANTHROPIC_MODEL": "b"}})
+        ));
+        assert!(!json_subset(
+            &json!({"env": {"ANTHROPIC_MODEL": "a"}}),
+            &json!({})
+        ));
+
+        // TOML：託管行都在就是同步；順序與額外行不影響，託管行被改掉就是 drift。
+        let expected = "model = \"a\"\nbase_url = \"https://relay/v1\"\n";
+        assert!(toml_lines_subset(
+            expected,
+            "base_url = \"https://relay/v1\"\nmodel = \"a\"\nother = 1\n"
+        ));
+        assert!(!toml_lines_subset(
+            expected,
+            "model = \"b\"\nbase_url = \"https://relay/v1\"\n"
+        ));
+    }
+
+    #[test]
     #[serial]
     fn sync_universal_to_apps_preserves_child_metadata() {
         with_test_home(|state, _home| {
@@ -8364,6 +8401,159 @@ pub struct ProviderSortUpdate {
 use crate::provider::UniversalProvider;
 use std::collections::HashMap;
 
+/// 全域供應商在單一 Agent 的落地狀態。UI 用它在名單列上回答
+/// 「這家發布給誰、誰正在用、有沒有進聚合或佇列」。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UniversalChildStatus {
+    pub app: String,
+    pub child_id: String,
+    /// 子卡存在（已發布給這個 Agent）。
+    pub exists: bool,
+    /// 這個 Agent 目前使用中（直連指標，或路由 / 聚合模式的預設）。
+    pub in_use: bool,
+    /// 在聚合名單裡。
+    pub in_stack: bool,
+    /// 在故障轉移佇列裡。
+    pub in_failover_queue: bool,
+    /// 子卡與全域設定是否一致。`None` = 子卡不存在，無法比較。
+    /// false 代表有人在 Agent 頁改過子卡，或上次同步沒寫完。
+    pub in_sync: Option<bool>,
+    /// 不一致的託管欄位（`env.ANTHROPIC_MODEL`、`auth.OPENAI_API_KEY`、`config`…）。
+    /// 同步時會覆蓋這些欄位；空陣列 = 一致或子卡不存在。
+    pub changed_fields: Vec<String>,
+    /// 這個 Agent 的 live 設定檔路徑（給詳情抽屜顯示，不保證存在）。
+    pub live_path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UniversalProviderStatus {
+    pub id: String,
+    pub children: Vec<UniversalChildStatus>,
+    /// 上次成功同步的時間戳（秒）；None = 從未成功同步過。
+    pub last_synced_at: Option<i64>,
+}
+
+/// `expected` 的每個欄位都要在 `actual` 裡有相同的值；`actual` 可以多出欄位
+/// （同步會保留 Agent 專屬設定）。目前只用來鎖住 drift 偵測的語意。
+#[cfg(test)]
+fn json_subset(expected: &serde_json::Value, actual: &serde_json::Value) -> bool {
+    match (expected, actual) {
+        (serde_json::Value::Object(expected_map), serde_json::Value::Object(actual_map)) => {
+            expected_map.iter().all(|(key, value)| {
+                actual_map
+                    .get(key)
+                    .is_some_and(|actual_value| json_subset(value, actual_value))
+            })
+        }
+        _ => expected == actual,
+    }
+}
+
+/// Codex 的 `config` 是 TOML 字串，同步會合併使用者自己的設定。逐行比對託管欄位：
+/// 投影出來的每一行都要出現在子卡裡（順序、額外行不影響）。
+fn toml_lines_subset(expected: &str, actual: &str) -> bool {
+    let actual_lines: std::collections::HashSet<&str> = actual
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    expected
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .all(|line| actual_lines.contains(line))
+}
+
+fn universal_child_in_sync(
+    app: &AppType,
+    universal: &UniversalProvider,
+    actual_config: &serde_json::Value,
+) -> bool {
+    universal_child_changes(app, universal, actual_config).is_empty()
+}
+
+/// 列出同步會覆蓋、但子卡目前不同的託管欄位。空 = 不需要同步。
+fn universal_child_changes(
+    app: &AppType,
+    universal: &UniversalProvider,
+    actual_config: &serde_json::Value,
+) -> Vec<String> {
+    let projected = match app {
+        AppType::Claude => universal.to_claude_provider(),
+        AppType::Codex => universal.to_codex_provider(),
+        AppType::Gemini => universal.to_gemini_provider(),
+        _ => None,
+    };
+    let Some(projected) = projected else {
+        return vec![]; // 這個 Agent 現在不該有子卡；由 exists/apps 判斷
+    };
+    let expected_config = &projected.settings_config;
+    if *app == AppType::Codex {
+        let mut changes = Vec::new();
+        if let Some(expected_auth) = expected_config.get("auth") {
+            json_diff_paths(
+                expected_auth,
+                actual_config.get("auth"),
+                "auth",
+                &mut changes,
+            );
+        }
+        match (
+            expected_config
+                .get("config")
+                .and_then(|value| value.as_str()),
+            actual_config.get("config").and_then(|value| value.as_str()),
+        ) {
+            (Some(expected_toml), Some(actual_toml))
+                if !toml_lines_subset(expected_toml, actual_toml) =>
+            {
+                changes.push("config".to_string())
+            }
+            (Some(_), None) => changes.push("config".to_string()),
+            _ => {}
+        }
+        changes
+    } else {
+        let mut changes = Vec::new();
+        json_diff_paths(expected_config, Some(actual_config), "", &mut changes);
+        changes
+    }
+}
+
+fn json_diff_paths(
+    expected: &serde_json::Value,
+    actual: Option<&serde_json::Value>,
+    prefix: &str,
+    out: &mut Vec<String>,
+) {
+    match (expected, actual) {
+        (serde_json::Value::Object(expected_map), Some(serde_json::Value::Object(actual_map))) => {
+            for (key, value) in expected_map {
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                json_diff_paths(value, actual_map.get(key), &path, out);
+            }
+        }
+        (_, Some(actual_value)) if expected == actual_value => {}
+        _ => out.push(prefix.to_string()),
+    }
+}
+
+/// live 設定檔路徑，只給 UI 顯示；真正的寫入由各 Agent 的投影邏輯決定。
+fn universal_live_path(app: &AppType) -> &'static str {
+    match app {
+        AppType::Claude => "~/.claude/settings.json",
+        AppType::Codex => "~/.codex/config.toml",
+        AppType::Gemini => "~/.gemini/.env",
+        _ => "",
+    }
+}
+
 impl ProviderService {
     /// 获取所有统一供应商
     pub fn list_universal(
@@ -8397,26 +8587,106 @@ impl ProviderService {
         // 获取统一供应商（用于删除生成的子供应商）
         let provider = state.db.get_universal_provider(id)?;
 
-        // 删除统一供应商
-        state.db.delete_universal_provider(id)?;
+        let children = [
+            (AppType::Claude, format!("universal-claude-{id}")),
+            (AppType::Codex, format!("universal-codex-{id}")),
+            (AppType::Gemini, format!("universal-gemini-{id}")),
+        ];
 
-        // 删除生成的子供应商
-        if let Some(p) = provider {
-            if p.apps.claude {
-                let claude_id = format!("universal-claude-{id}");
-                let _ = state.db.delete_provider("claude", &claude_id);
+        for (app, child_id) in &children {
+            Self::ensure_universal_child_not_referenced(state, app, child_id)?;
+        }
+
+        // 子供应商走正常的删除路径：它会把这家先移出聚合名单，并写回客户端文件。
+        // 失败不再被吞掉——否则名单里会留下指向已删除 supplier 的幽灵成员。
+        let mut failures = Vec::new();
+        for (app, child_id) in &children {
+            if state
+                .db
+                .get_provider_by_id(child_id, app.as_str())?
+                .is_none()
+            {
+                continue;
             }
-            if p.apps.codex {
-                let codex_id = format!("universal-codex-{id}");
-                let _ = state.db.delete_provider("codex", &codex_id);
+            if let Err(error) = Self::delete(state, app.clone(), child_id) {
+                failures.push(format!("{}：{error}", app.as_str()));
             }
-            if p.apps.gemini {
-                let gemini_id = format!("universal-gemini-{id}");
-                let _ = state.db.delete_provider("gemini", &gemini_id);
-            }
+        }
+        if !failures.is_empty() {
+            return Err(AppError::Message(format!(
+                "有子供應商未能刪除，已保留全域供應商以便重試：{}",
+                failures.join("；")
+            )));
+        }
+
+        // 子供应商都清掉了，再删统一供应商本身。
+        if provider.is_some() {
+            state.db.delete_universal_provider(id)?;
         }
 
         Ok(true)
+    }
+
+    /// 讀取單一全域供應商在各 Agent 的落地狀態；找不到回 None。
+    pub fn universal_status(
+        state: &AppState,
+        id: &str,
+    ) -> Result<Option<UniversalProviderStatus>, AppError> {
+        let Some(provider) = state.db.get_universal_provider(id)? else {
+            return Ok(None);
+        };
+        let mut children = Vec::new();
+        for app in [AppType::Claude, AppType::Codex, AppType::Gemini] {
+            let child_id = format!("universal-{}-{id}", app.as_str());
+            let child = state.db.get_provider_by_id(&child_id, app.as_str())?;
+            let exists = child.is_some();
+            let in_sync = child
+                .as_ref()
+                .map(|child| universal_child_in_sync(&app, &provider, &child.settings_config));
+            let changed_fields = child
+                .as_ref()
+                .map(|child| universal_child_changes(&app, &provider, &child.settings_config))
+                .unwrap_or_default();
+            // 和刪除／同步的後端守衛同一個集合：直連指標或代理路由指著它就算使用中。
+            // 只看 route 會漏掉「直連 B、路由 A」這種正常狀態，讓 UI 誤判 B 可刪。
+            let in_use = exists && crate::mode::current::is_referenced(&state.db, &app, &child_id)?;
+            let in_stack =
+                exists && crate::mode::stack::is_member(&app, &child_id).unwrap_or(false);
+            let in_failover_queue = exists
+                && state
+                    .db
+                    .get_failover_queue(app.as_str())
+                    .map(|queue| queue.iter().any(|item| item.provider_id == child_id))
+                    .unwrap_or(false);
+            children.push(UniversalChildStatus {
+                app: app.as_str().to_string(),
+                child_id,
+                exists,
+                in_use,
+                in_stack,
+                in_failover_queue,
+                in_sync,
+                changed_fields,
+                live_path: universal_live_path(&app).to_string(),
+            });
+        }
+        Ok(Some(UniversalProviderStatus {
+            id: id.to_string(),
+            children,
+            last_synced_at: provider.last_synced_at,
+        }))
+    }
+
+    /// 所有全域供應商的落地狀態。
+    pub fn universal_statuses(state: &AppState) -> Result<Vec<UniversalProviderStatus>, AppError> {
+        let providers = state.db.get_all_universal_providers()?;
+        let mut statuses = Vec::with_capacity(providers.len());
+        for id in providers.keys() {
+            if let Some(status) = Self::universal_status(state, id)? {
+                statuses.push(status);
+            }
+        }
+        Ok(statuses)
     }
 
     /// 同步统一供应商到各应用
@@ -8425,6 +8695,27 @@ impl ProviderService {
             .db
             .get_universal_provider(id)?
             .ok_or_else(|| AppError::Message(format!("统一供应商 {id} 不存在")))?;
+        for (enabled, app, child_id) in [
+            (
+                provider.apps.claude,
+                AppType::Claude,
+                format!("universal-claude-{id}"),
+            ),
+            (
+                provider.apps.codex,
+                AppType::Codex,
+                format!("universal-codex-{id}"),
+            ),
+            (
+                provider.apps.gemini,
+                AppType::Gemini,
+                format!("universal-gemini-{id}"),
+            ),
+        ] {
+            if !enabled {
+                Self::ensure_universal_child_not_referenced(state, &app, &child_id)?;
+            }
+        }
         // 子供应商经 save_provider 直接入库，不走保存校验，图标在这里把关
         icon::validate_icon(provider.icon.as_deref())?;
 
@@ -8432,6 +8723,7 @@ impl ProviderService {
         // one broken config file must not prevent the other two apps from being
         // updated, but it must still be reported instead of returning success.
         let mut live_failures = Vec::new();
+        let mut delete_failures = Vec::new();
 
         // 同步到 Claude
         if let Some(mut claude_provider) = provider.to_claude_provider() {
@@ -8453,9 +8745,18 @@ impl ProviderService {
                 &mut live_failures,
             );
         } else {
-            // 如果禁用了 Claude，删除对应的子供应商
+            // 如果禁用了 Claude，删除对应的子供应商。走正常删除路径：先移出聚合名单，
+            // 失败要报出来，不能留下幽灵成员。
             let claude_id = format!("universal-claude-{id}");
-            let _ = state.db.delete_provider("claude", &claude_id);
+            if state
+                .db
+                .get_provider_by_id(&claude_id, AppType::Claude.as_str())?
+                .is_some()
+            {
+                if let Err(error) = Self::delete(state, AppType::Claude, &claude_id) {
+                    delete_failures.push(format!("Claude：{error}"));
+                }
+            }
         }
 
         // 同步到 Codex
@@ -8478,8 +8779,17 @@ impl ProviderService {
                 &mut live_failures,
             );
         } else {
+            // 如果禁用了 Codex，删除对应的子供应商（同上）。
             let codex_id = format!("universal-codex-{id}");
-            let _ = state.db.delete_provider("codex", &codex_id);
+            if state
+                .db
+                .get_provider_by_id(&codex_id, AppType::Codex.as_str())?
+                .is_some()
+            {
+                if let Err(error) = Self::delete(state, AppType::Codex, &codex_id) {
+                    delete_failures.push(format!("Codex：{error}"));
+                }
+            }
         }
 
         // 同步到 Gemini
@@ -8502,18 +8812,63 @@ impl ProviderService {
                 &mut live_failures,
             );
         } else {
+            // 如果禁用了 Gemini，删除对应的子供应商（同上）。
             let gemini_id = format!("universal-gemini-{id}");
-            let _ = state.db.delete_provider("gemini", &gemini_id);
+            if state
+                .db
+                .get_provider_by_id(&gemini_id, AppType::Gemini.as_str())?
+                .is_some()
+            {
+                if let Err(error) = Self::delete(state, AppType::Gemini, &gemini_id) {
+                    delete_failures.push(format!("Gemini：{error}"));
+                }
+            }
         }
 
-        if live_failures.is_empty() {
+        if live_failures.is_empty() && delete_failures.is_empty() {
+            // 只有全部寫入成功才記「上次同步」；部分失敗時保留舊時間戳，讓 UI 繼續顯示未同步。
+            let mut synced = provider.clone();
+            synced.last_synced_at = Some(chrono::Utc::now().timestamp());
+            state.db.save_universal_provider(&synced)?;
             Ok(true)
         } else {
+            let mut parts = Vec::new();
+            if !live_failures.is_empty() {
+                parts.push(format!(
+                    "以下应用的配置文件未能写入，仍是旧内容：{}",
+                    live_failures.join("、")
+                ));
+            }
+            if !delete_failures.is_empty() {
+                parts.push(format!(
+                    "以下应用的子供应商未能删除：{}",
+                    delete_failures.join("、")
+                ));
+            }
             Err(AppError::Message(format!(
-                "统一供应商已保存到数据库，但以下应用的配置文件未能写入，仍是旧内容：{}。请重试同步，或切换一次该应用的供应商。",
-                live_failures.join("、")
+                "统一供应商已保存到数据库，但{}。请重试同步。",
+                parts.join("；")
             )))
         }
+    }
+
+    fn ensure_universal_child_not_referenced(
+        state: &AppState,
+        app: &AppType,
+        child_id: &str,
+    ) -> Result<(), AppError> {
+        if state
+            .db
+            .get_provider_by_id(child_id, app.as_str())?
+            .is_some()
+            && crate::mode::current::is_referenced(&state.db, app, child_id)?
+        {
+            return Err(AppError::Message(format!(
+                "{} 正在使用這個全域供應商；請先在該 Agent 切換到其他 provider。",
+                app.as_str()
+            )));
+        }
+        Ok(())
     }
 
     /// Re-project a generated universal child only when it is the effective
