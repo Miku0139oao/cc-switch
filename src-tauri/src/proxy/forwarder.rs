@@ -662,7 +662,7 @@ impl RequestForwarder {
     // 一次尝试和一个客户端请求的收尾记账（熔断器、「正在使用」、代理统计、故障转移切换）
     // 都经下面这几个方法，不在重试循环里直接写。
 
-    /// 开始尝试一家：界面上显示正在尝试哪家。
+    /// 开始尝试一家：界面上显示正在尝试哪家。聚合請求刻意不更新（路由統計隔離）。
     async fn note_attempt(&self, provider: &Provider) {
         if !self.routing_state_enabled() {
             return;
@@ -844,6 +844,9 @@ impl RequestForwarder {
         extensions: Extensions,
         providers: Vec<Provider>,
     ) -> Result<ForwardResult, ForwardError> {
+        // 聚合請求刻意不碰路由統計（total / success / failed / 目前供應商 / 活躍連線）：
+        // `stacked_requests_leave_every_routing_state_alone` 把這條隔離鎖住了。
+        // 聚合的可觀察性走用量日誌與聚合診斷面板，不在 ProxyStatus 裡。
         let connection_guard = if self.routing_state_enabled() {
             let guard = ActiveConnectionGuard::acquire(self.status.clone()).await;
             {

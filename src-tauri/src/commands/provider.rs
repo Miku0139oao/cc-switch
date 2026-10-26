@@ -6,7 +6,7 @@ use crate::commands::copilot::CopilotAuthState;
 use crate::commands::xai_oauth::XaiOAuthState;
 use crate::error::AppError;
 use crate::provider::{ClaudeDesktopMode, Provider, ProviderMeta};
-use crate::services::provider::{EditorSave, EditorView};
+use crate::services::provider::{EditorSave, EditorView, UniversalProviderStatus};
 use crate::services::{
     EndpointLatency, ProviderService, ProviderSortUpdate, SpeedtestService, SwitchResult,
 };
@@ -1021,6 +1021,22 @@ pub fn sync_universal_provider(
     emit_universal_provider_synced(&app, "sync", &id);
 
     Ok(result)
+}
+
+/// 所有全域供應商在各 Agent 的落地狀態（是否存在、使用中、聚合、佇列）。
+#[tauri::command]
+pub fn get_universal_provider_statuses(
+    state: State<'_, AppState>,
+) -> Result<Vec<UniversalProviderStatus>, String> {
+    ProviderService::universal_statuses(state.inner()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_universal_provider_status(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<UniversalProviderStatus>, String> {
+    ProviderService::universal_status(state.inner(), &id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

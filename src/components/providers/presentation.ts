@@ -145,6 +145,8 @@ export interface SwitchModeInput {
   stackMembers: Map<string, number>;
   /** 聚合成员的持久化顺序；未传时退回 Map 的插入顺序。 */
   stackOrder?: string[];
+  /** 未過濾的完整名單：搜尋只決定畫哪些卡，不能讓「預設供應商」看起來消失。 */
+  allProviders?: Provider[];
   /** 需要路由的原因（悬停「需要路由」时的说明） */
   routingReason: (provider: Provider) => string;
   serviceRunning: boolean;
@@ -160,6 +162,8 @@ export interface SwitchModeInput {
     stackRemove: (provider: Provider) => void;
     stackMove: (provider: Provider, delta: -1 | 1) => void;
     stackSetDefault: (provider: Provider) => void;
+    /** 聚合名單拖曳：傳入非預設成員的新順序 */
+    stackReorder: (providerIds: string[]) => void;
   };
 }
 
@@ -496,12 +500,15 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
 
   // view === "stack"
   const on = active === "stack";
+  // 預設那家用完整名單判斷：搜尋把它的卡片藏起來時，不能誤判成「還沒有預設供應商」。
+  const allProviders = input.allProviders ?? providers;
   const defaultId = (() => {
     const candidate = on ? routeId : (routeId ?? directId);
-    const p = providers.find((x) => x.id === candidate);
+    const p = allProviders.find((x) => x.id === candidate);
     return p && !blockedFromRouting(app, p) ? p.id : null;
   })();
   const defaultProvider = providers.find((p) => p.id === defaultId);
+  const defaultHidden = defaultId !== null && defaultProvider === undefined;
   // 行上的主操作只有名单的添加 / 移除；「设为默认」在「更多」菜单里：进了聚合当场生效，
   // 在直连时只记下选择（切换时的确认框里还能改）。正在路由时不能点：默认和路由目标是同一个
   // 指针，改了就是当场换路由
@@ -544,6 +551,7 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
           provider: defaultProvider,
           presentation: {
             tone: on ? ("stack" as const) : undefined,
+            showHealth: input.serviceRunning,
             status: on
               ? {
                   label: t("providerCard.status.currentDefault"),
@@ -573,13 +581,14 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
     return {
       provider: p,
       presentation: {
+        showHealth: input.serviceRunning,
         chips: [
           {
             key: "priority",
-            label: `#${priority}`,
+            label: `P${priority + 1}`,
             tone: "outline" as const,
             title: t("providerCard.priority.tooltip", {
-              priority,
+              priority: priority + 1,
             }),
           },
           ...identityChips(p),
@@ -668,7 +677,9 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
             : "providerCard.section.stackDefaultHelp",
         ),
       },
-      emptyText: t("providerCard.section.stackNoDefault"),
+      emptyText: defaultHidden
+        ? t("providerCard.section.stackDefaultHidden")
+        : t("providerCard.section.stackNoDefault"),
       items: defaultItems,
     },
     {

@@ -204,6 +204,7 @@ describe("ProviderList Component", () => {
         stackRemove: vi.fn(),
         stackMove: vi.fn(),
         stackSetDefault: vi.fn(),
+        stackReorder: vi.fn(),
       },
       ...overrides,
     };

@@ -14,6 +14,7 @@ import type {
 import type { Provider } from "@/types";
 import type { AppId } from "@/lib/api";
 import { authApi } from "@/lib/api";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { ProviderIconBox } from "@/components/ProviderIconBox";
 import { HoverTip } from "@/components/ui/hover-tip";
@@ -35,7 +36,11 @@ import {
   isOfficialAccount,
   resolveCodexOfficialIdentity,
 } from "@/utils/providerCapabilities";
-import { useProviderHealth } from "@/lib/query/failover";
+import {
+  useProviderHealth,
+  useCircuitBreakerStats,
+  useResetCircuitBreaker,
+} from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
 import { resolveProviderIcon } from "@/utils/providerIcon";
 import { isAdditiveAppId, isProxyAppId } from "@/config/appConfig";
@@ -65,6 +70,9 @@ interface ProviderCardProps {
   onOpenTerminal?: (provider: Provider) => void;
   isTesting?: boolean;
   dragHandleProps?: DragHandleProps;
+  /** 由全域供應商同步出來的子卡：編輯／刪除回到全域供應商頁 */
+  managedGlobally?: boolean;
+  onManageGlobal?: (provider: Provider) => void;
 }
 
 /** 当前那张：模式色边框 + 淡底；共存式应用的默认那家同直连色。 */
@@ -103,17 +111,23 @@ export function CardChipBadge({ chip }: { chip: CardChip }) {
 function HealthChip({
   consecutiveFailures,
   isHealthy,
+  circuitState,
 }: {
   consecutiveFailures: number;
   isHealthy?: boolean;
+  circuitState?: "closed" | "open" | "half_open";
 }) {
   const { t } = useTranslation();
   const chip: CardChip =
-    consecutiveFailures === 0
-      ? { key: "health", label: t("health.operational"), tone: "success" }
-      : isHealthy !== false
-        ? { key: "health", label: t("health.degraded"), tone: "warning" }
-        : { key: "health", label: t("health.circuitOpen"), tone: "danger" };
+    circuitState === "open"
+      ? { key: "health", label: t("health.circuitOpen"), tone: "danger" }
+      : circuitState === "half_open"
+        ? { key: "health", label: t("health.halfOpen"), tone: "warning" }
+        : consecutiveFailures === 0
+          ? { key: "health", label: t("health.operational"), tone: "success" }
+          : isHealthy !== false
+            ? { key: "health", label: t("health.degraded"), tone: "warning" }
+            : { key: "health", label: t("health.circuitOpen"), tone: "danger" };
   return <CardChipBadge chip={chip} />;
 }
 
@@ -191,6 +205,8 @@ export function ProviderCard({
   onOpenTerminal,
   isTesting,
   dragHandleProps,
+  managedGlobally,
+  onManageGlobal,
 }: ProviderCardProps) {
   const { t } = useTranslation();
   const codexOfficialIdentity = resolveCodexOfficialIdentity(appId, provider);
@@ -226,6 +242,34 @@ export function ProviderCard({
     appId,
     Boolean(presentation.showHealth) && isProxyAppId(appId),
   );
+  const breakerEnabled =
+    Boolean(presentation.showHealth) && isProxyAppId(appId);
+  const { data: breaker } = useCircuitBreakerStats(
+    provider.id,
+    appId,
+    breakerEnabled,
+  );
+  const resetBreaker = useResetCircuitBreaker();
+  const handleResetBreaker = () => {
+    resetBreaker.mutate(
+      { providerId: provider.id, appType: appId },
+      {
+        onSuccess: () =>
+          toast.success(
+            t("providerCard.resetBreakerDone", {
+              defaultValue: "已重置斷路器",
+            }),
+          ),
+        onError: (error) =>
+          toast.error(
+            t("providerCard.resetBreakerFailed", {
+              defaultValue: "重置斷路器失敗",
+            }),
+            { description: String(error) },
+          ),
+      },
+    );
+  };
 
   const fallbackUrlText = t("provider.notConfigured", {
     defaultValue: "未配置接口地址",
@@ -379,6 +423,7 @@ export function ProviderCard({
               <HealthChip
                 consecutiveFailures={health.consecutive_failures}
                 isHealthy={health.is_healthy}
+                circuitState={breaker?.state}
               />
             )}
           </div>
@@ -574,8 +619,18 @@ export function ProviderCard({
           <ProviderCardActions
             providerName={provider.name}
             presentation={presentation}
+            managedGlobally={managedGlobally}
+            onManageGlobal={
+              onManageGlobal ? () => onManageGlobal(provider) : undefined
+            }
             onEdit={() => onEdit(provider)}
             onDelete={() => onDelete(provider)}
+            onResetBreaker={
+              breaker && breaker.state !== "closed"
+                ? handleResetBreaker
+                : undefined
+            }
+            resettingBreaker={resetBreaker.isPending}
             onDuplicate={
               onDuplicate && !(appId === "kimi" && isOfficial)
                 ? () => onDuplicate(provider)

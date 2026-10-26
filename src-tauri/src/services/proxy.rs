@@ -647,6 +647,21 @@ impl ProxyService {
         Ok(())
     }
 
+    /// 读取指定 Provider 的熔断器实时状态（代理未运行时返回 None）。
+    pub async fn get_provider_circuit_breaker_stats(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+    ) -> Option<crate::proxy::CircuitBreakerStats> {
+        if let Some(server) = self.server.read().await.as_ref() {
+            server
+                .get_circuit_breaker_stats(provider_id, app_type)
+                .await
+        } else {
+            None
+        }
+    }
+
     /// 重置指定 Provider 的熔断器
     ///
     /// 如果代理服务器正在运行，立即重置内存中的熔断器状态

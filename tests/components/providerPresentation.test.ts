@@ -43,6 +43,7 @@ function actions() {
     stackRemove: vi.fn(),
     stackMove: vi.fn(),
     stackSetDefault: vi.fn(),
+    stackReorder: vi.fn(),
   };
 }
 
@@ -388,7 +389,7 @@ describe("buildSwitchSections — stack", () => {
     // 发布了 0 个模型的成员要提醒；优先级徽章同在，不依赖两者的先后顺序
     expect(item(sections, "backup").chips).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ key: "priority", label: "#0" }),
+        expect.objectContaining({ key: "priority", label: "P1" }),
         expect.objectContaining({ key: "models", tone: "warning" }),
       ]),
     );
@@ -450,7 +451,7 @@ describe("buildSwitchSections — stack", () => {
     expect(input.actions.stackSetDefault).toHaveBeenCalledWith(converted);
   });
 
-  it("uses persisted Stack order for #0..N priority and move actions", () => {
+  it("uses persisted Stack order for P1..N priority and move actions", () => {
     const { sections, input } = build({
       active: "stack",
       view: "stack",
@@ -465,15 +466,43 @@ describe("buildSwitchSections — stack", () => {
 
     expect(item(sections, "converted").chips[0]).toMatchObject({
       key: "priority",
-      label: "#0",
+      label: "P1",
     });
     expect(item(sections, "backup").chips[0]).toMatchObject({
       key: "priority",
-      label: "#1",
+      label: "P2",
     });
     expect(item(sections, "converted").move?.onUp).toBeUndefined();
     item(sections, "converted").move?.onDown?.();
     expect(input.actions.stackMove).toHaveBeenCalledWith(converted, 1);
+  });
+
+  it("keeps the default section honest when search hides the default provider", () => {
+    const { sections } = build({
+      active: "stack",
+      view: "stack",
+      routeId: "relay",
+      // 搜尋只留下 backup；預設那家 relay 被藏起來
+      providers: [backup],
+      allProviders: [official, relay, backup, converted],
+      stackMembers: new Map([
+        ["relay", 1],
+        ["backup", 1],
+      ]),
+    });
+
+    const defaultSection = sections.find(
+      (section) => section.key === "default",
+    );
+    expect(defaultSection?.items).toEqual([]);
+    expect(defaultSection?.emptyText).toBe(
+      "providerCard.section.stackDefaultHidden",
+    );
+    // 成員的優先序仍按完整名單算：relay 是預設，backup 就是 P1
+    expect(item(sections, "backup").chips[0]).toMatchObject({
+      key: "priority",
+      label: "P1",
+    });
   });
 
   it("does not let the Stack default change from the preview while routing", () => {

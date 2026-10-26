@@ -5,6 +5,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import {
   ArrowLeft,
   BookOpen,
+  Boxes,
   ChartColumn,
   ChevronsLeft,
   ChevronsRight,
@@ -278,6 +279,11 @@ function MainDirectory({
     { page: "skills", label: "Skills", icon: SkillsIcon },
     { page: "prompts", label: t("nav.prompts"), icon: BookOpen },
     { page: "sessions", label: t("nav.sessions"), icon: History },
+    {
+      page: "globalProviders",
+      label: t("nav.globalProviders"),
+      icon: Boxes,
+    },
     {
       page: "auth",
       label: t("nav.auth"),

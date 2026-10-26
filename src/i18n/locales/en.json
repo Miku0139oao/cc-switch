@@ -14,6 +14,7 @@
     "save": "Save",
     "saving": "Saving...",
     "cancel": "Cancel",
+    "undo": "Undo",
     "confirm": "Confirm",
     "close": "Close",
     "done": "Done",
@@ -2514,9 +2515,11 @@
     "prevPage": "Previous page",
     "nextPage": "Next page",
     "statusFilter": {
-      "all": "All status codes"
+      "all": "All status codes",
+      "failures": "Failures only"
     },
     "detail": {
+      "routingTrace": "Routing trace",
       "tokensTitle": "Token usage",
       "costTitle": "Cost breakdown ({{currency}})",
       "performance": "Performance",
@@ -3634,6 +3637,7 @@
     "degraded": "Degraded",
     "failed": "Failed",
     "circuitOpen": "Circuit Open",
+    "halfOpen": "Half-open",
     "consecutiveFailures": "{{count}} consecutive failures"
   },
   "failover": {
@@ -3900,6 +3904,8 @@
     "notes": "Notes",
     "notesPlaceholder": "Optional: Add notes",
     "enabledApps": "Enabled Apps",
+    "availableAgents": "Available to agents",
+    "availableAgentsHint": "The API key and endpoint are managed once. Each selected agent gets its own provider and model mapping.",
     "modelConfig": "Model Configuration",
     "model": "Model",
     "sync": "Sync to Apps",
@@ -4169,6 +4175,7 @@
     "agent": "Agent",
     "mode": "Mode",
     "provider": "Active provider",
+    "stackDefaultProvider": "Aggregation default (actual depends on model and balancing)",
     "routeState": "Routing / aggregation",
     "quota": "Key quota",
     "directState": "Direct connection",
@@ -4201,6 +4208,7 @@
     "todayRequests": "{{value}} req",
     "todayHitRate": "Hit {{value}}",
     "usage": "Usage",
+    "globalProviders": "Global providers",
     "auth": "Accounts",
     "authNeedsReauth": "An account needs to sign in again",
     "prompts": "Prompts",
@@ -4280,6 +4288,20 @@
     },
     "active": "active",
     "activeTitle": "{{mode}} is active",
+    "workspace": {
+      "tabsLabel": "Aggregation sections",
+      "previewTitle": "Preview · not active yet",
+      "previewHint": "These settings are saved, but clients will not see aggregated models until you switch to Aggregation.",
+      "activate": "Switch to Aggregation",
+      "tabMembers": "Members",
+      "tabModels": "Models & routing",
+      "tabBalance": "Balancing",
+      "tabDiagnostics": "Diagnostics",
+      "defaultProvider": "Default",
+      "memberCount": "Members",
+      "publishedModels": "Published models",
+      "strategy": "Balancing"
+    },
     "noProvider": "none",
     "failover": "Failover",
     "routeSettings": "Routing settings",
@@ -4337,6 +4359,29 @@
           "description": "New sessions prefer the least busy provider; recent response time breaks ties."
         }
       }
+    },
+    "diagnostics": {
+      "title": "Aggregation route diagnostics",
+      "description": "Verify the model IDs exposed to clients, their primary provider, and fallback targets.",
+      "active": "Published",
+      "inactive": "Aggregation is not active",
+      "inactiveHint": "This list is saved but not published to the client. The CLI's /model can still show native models until you switch to Aggregation.",
+      "defaultRoute": "Current default",
+      "publishedModels": "Published models",
+      "strategy": "Balance policy",
+      "stickySessions": "Sticky sessions",
+      "claudeHarnessHint": "Opus, Sonnet, and Fable in Claude Code's system prompt are harness display names, not the backend. Use the ccs-* model ID and the upstream model below as the source of truth.",
+      "noModels": "No aggregation models to diagnose yet. Check that members are added and each member publishes at least one model.",
+      "fallbackPath": "On failure",
+      "copy": "Copy diagnostics",
+      "copied": "Aggregation diagnostics copied",
+      "copyFailed": "Could not copy aggregation diagnostics"
+    },
+    "routingEvents": {
+      "title": "Recent fallbacks",
+      "description": "Which provider an aggregated request actually fell back to after a failure. Only model-level stack fallbacks are recorded here, not the route-mode queue.",
+      "attempt": "Attempt {{index}}",
+      "empty": "No fallbacks yet. Successful aggregation requests leave no record."
     },
     "fallback": {
       "title": "Model pool and fallback order",
@@ -4446,6 +4491,11 @@
     }
   },
   "providerCard": {
+    "resetBreakerDone": "Circuit breaker reset",
+    "resetBreakerFailed": "Failed to reset circuit breaker",
+    "priority": {
+      "tooltip": "#{{priority}}: order in the aggregation list; lower numbers are tried first. Reordering changes automatic fallback and balancing candidates."
+    },
     "status": {
       "inUse": "In use",
       "routing": "Routing",
@@ -4466,13 +4516,16 @@
       "enable": "Enable",
       "disable": "Disable",
       "edit": "Edit {{name}}",
+      "manageGlobal": "Manage on the Global providers page",
+      "manageGlobalFor": "Manage {{name}} (global provider)",
+      "resetBreaker": "Reset circuit breaker",
       "more": "More actions for {{name}}",
       "moveUp": "Move {{name}} up",
       "moveDown": "Move {{name}} down"
     },
     "chip": {
       "global": "Global",
-      "globalHint": "Created in the Auth Center and shared across agents. Adding it here only changes this agent.",
+      "globalHint": "Created on the Global providers page and shared across agents. Adding or reordering it here only affects this agent.",
       "official": "Official",
       "needsRoute": "Needs routing",
       "directWhenDirect": "Used when direct",
@@ -4508,7 +4561,7 @@
       "stackEmpty": "No other providers added yet.",
       "added": "Added · {{count}}",
       "addedHelpTitle": "Added",
-      "addedHelp": "Added providers are written into {{app}}'s config. #0 has the highest fallback priority; if a five-hour, weekly or monthly quota is exhausted, the next available member is used.",
+      "addedHelp": "Added providers are written into {{app}}'s config. P1 has the highest fallback priority; if a five-hour, weekly or monthly quota is exhausted, the next available member is used.",
       "addedEmpty": "No providers added yet.",
       "available": "Available · {{count}}",
       "globalAvailable": "Global providers · {{count}}",
@@ -4517,6 +4570,7 @@
       "agentAvailable": "This agent's providers · {{count}}",
       "agentAvailableHelpTitle": "This agent's providers",
       "agentAvailableHelp": "These providers exist only in this agent's configuration and are not shared with other agents.",
+      "stackDefaultHidden": "The default provider is hidden by the current search. Clear the search to see it.",
       "stackNoDefault": "No default provider yet. You pick one when switching to Aggregation."
     }
   },
@@ -4984,7 +5038,7 @@
     "helpTitle": "What is Accounts?",
     "providers": {
       "title": "Global providers",
-      "description": "Manage API keys and endpoints in one place; each agent still chooses its own active provider.",
+      "description": "Manage API keys and endpoints centrally. Choose which agents can see each provider; each agent still decides whether to use it.",
       "add": "Add provider",
       "importExisting": "Import existing",
       "importTitle": "Import an existing provider",
@@ -4994,6 +5048,30 @@
       "importFailed": "Could not read existing providers",
       "search": "Search providers or endpoints",
       "allAgents": "All agents",
+      "assign": "Assign",
+      "assignFor": "Assign {{name}} to agents",
+      "assignTitle": "Assign {{name}} to agents",
+      "assignDescription": "Choose which agents can see this provider. This only creates selectable providers; it does not switch any agent's current provider.",
+      "assignApply": "Apply and sync",
+      "assignHint": "Saving syncs to the selected agents. Advanced per-agent model roles can still be changed in Edit.",
+      "agentCurrentlyAvailable": "Already available",
+      "agentNotAssigned": "Not assigned",
+      "agentState": {
+        "inUse": "In use",
+        "inStack": "In aggregation",
+        "inFailover": "In failover",
+        "available": "Available",
+        "outOfSync": "Out of sync"
+      },
+      "agentToggle": "Make available to {{name}}",
+      "agentModel": "{{name}} primary model",
+      "agentModelPlaceholder": {
+        "claude": "e.g. deepseek-v4-pro",
+        "codex": "e.g. deepseek-v4-flash",
+        "gemini": "e.g. gemini-2.5-pro"
+      },
+      "claudeModelHint": "Haiku, Sonnet, Opus, and Fable reuse this primary model unless you configure them separately.",
+      "agentModelRequired": "Enter a model for {{agents}} first so sync does not create an unusable provider.",
       "empty": "No global providers yet",
       "emptyHint": "New providers become available to the selected agents; no agent's active provider is changed automatically.",
       "sharedCredential": "Shared credential",
@@ -5169,6 +5247,60 @@
       "renameProvider": "Oh My Pi provider keys cannot be renamed.",
       "providerMissing": "This Oh My Pi provider is no longer saved.",
       "legacyModelsJson": "Oh My Pi still has a legacy models.json, which omp migrates to models.yml on its next start. Run omp once, then add the provider again."
+    }
+  },
+  "globalProviders": {
+    "helpTitle": "What are global providers?",
+    "description": "Manage API keys and endpoints shared across agents, then choose which agents can use them.",
+    "detail": {
+      "open": "{{name}} details",
+      "using": "In use",
+      "inStack": "In aggregation",
+      "outOfSync": "Out of sync",
+      "identity": "Identity and credential",
+      "universalId": "Global id",
+      "apiKey": "Shared credential",
+      "lastSynced": "Last successful sync",
+      "perAgent": "Per-agent state",
+      "notAssigned": "Not assigned",
+      "notPublished": "Not published yet",
+      "published": "Published",
+      "openAgent": "Open {{name}}",
+      "childId": "Child id",
+      "livePath": "Live file",
+      "changedFields": "Sync will overwrite:",
+      "queueHint": "Also used in the failover queue: {{agents}}. Remove it there before deleting.",
+      "inUseHint": "{{agents}} is using this provider; the backend will refuse deletion. Switch that agent to another provider first.",
+      "deleteBlocked": "An agent is using this provider; cannot delete",
+      "syncNow": "Sync",
+      "syncNowWithChanges": "Sync ({{count}} out of sync)"
+    },
+    "impact": {
+      "reasonInUse": "In use; the backend will refuse deletion",
+      "reasonCard": "The child card in this agent disappears",
+      "reasonStack": "Removed from the aggregation list; published ccs-* model ids stop resolving",
+      "reasonQueue": "Removed from the failover queue",
+      "reasonDisableInUse": "In use and cannot be disabled; the backend will reject the whole sync",
+      "reasonDisable": "Publishing is off; the child card will be deleted",
+      "reasonCreate": "Creates an available child card; does not switch the active provider",
+      "reasonUpdate": "Overwrites these fields: {{fields}}",
+      "reasonNoChange": "Already up to date; no change",
+      "confirmDelete": "Delete global provider",
+      "confirmSync": "Start sync",
+      "deleteTitle": "Delete “{{name}}”?",
+      "syncTitle": "Sync “{{name}}” to every agent?",
+      "deleteLead": "The cards and settings listed below will be removed. This does not switch any agent's active provider.",
+      "syncLead": "Only creates or updates optional child cards; does not switch any active provider.",
+      "blockedDelete": "An agent is using this provider. Switch it to another provider first, then delete.",
+      "blockedSync": "An agent is using this provider but publishing was turned off. Switch that agent first, or turn the toggle back on.",
+      "nothingToDelete": "No agent has a child card for this provider; only the global record will be deleted.",
+      "nothingToSync": "Every agent is already up to date; nothing to sync.",
+      "working": "Working…",
+      "effectBlocked": "Blocked",
+      "effectCreate": "Create",
+      "effectUpdate": "Update",
+      "effectDelete": "Delete",
+      "effectUnchanged": "No change"
     }
   }
 }

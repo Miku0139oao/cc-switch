@@ -4,6 +4,7 @@
 
 use crate::error::AppError;
 use crate::proxy::types::*;
+use rusqlite::OptionalExtension;
 
 use super::super::{lock_conn, Database};
 
@@ -21,6 +22,37 @@ fn validate_pricing_source(value: &str) -> Result<&str, AppError> {
             format!("Invalid pricing mode: {value}"),
         ))
     }
+}
+
+/// 聚合模式下一次「失败 → 换到下一段」的记录。用于回答「為什麼換家、換過幾次」。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StackFallbackEvent {
+    pub id: i64,
+    pub session_id: String,
+    pub app_type: String,
+    pub logical_model: String,
+    pub attempt_index: i64,
+    pub failed_provider_id: String,
+    pub next_provider_id: String,
+    pub next_model: String,
+    pub error_class: String,
+    pub created_at: i64,
+}
+
+fn map_stack_fallback_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<StackFallbackEvent> {
+    Ok(StackFallbackEvent {
+        id: row.get(0)?,
+        session_id: row.get(1)?,
+        app_type: row.get(2)?,
+        logical_model: row.get(3)?,
+        attempt_index: row.get(4)?,
+        failed_provider_id: row.get(5)?,
+        next_provider_id: row.get(6)?,
+        next_model: row.get(7)?,
+        error_class: row.get(8)?,
+        created_at: row.get(9)?,
+    })
 }
 
 impl Database {
@@ -233,6 +265,93 @@ impl Database {
         )
         .map_err(|error| AppError::Database(error.to_string()))?;
         Ok(())
+    }
+
+    /// 读取最近的聚合失败转移事件（新的在前）。`app_type` 为空时读取所有应用。
+    pub fn get_stack_fallback_events(
+        &self,
+        app_type: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<StackFallbackEvent>, AppError> {
+        let conn = lock_conn!(self.conn);
+        let limit = limit.clamp(1, 500) as i64;
+        let sql = if app_type.is_some() {
+            "SELECT id, session_id, app_type, logical_model, attempt_index,
+                    failed_provider_id, next_provider_id, next_model,
+                    error_class, created_at
+             FROM stack_fallback_events
+             WHERE app_type = ?1
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?2"
+        } else {
+            "SELECT id, session_id, app_type, logical_model, attempt_index,
+                    failed_provider_id, next_provider_id, next_model,
+                    error_class, created_at
+             FROM stack_fallback_events
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?1"
+        };
+        let mut statement = conn
+            .prepare(sql)
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        let mut rows = match app_type {
+            Some(app) => statement
+                .query_map(rusqlite::params![app, limit], map_stack_fallback_event)
+                .map_err(|error| AppError::Database(error.to_string()))?,
+            None => statement
+                .query_map(rusqlite::params![limit], map_stack_fallback_event)
+                .map_err(|error| AppError::Database(error.to_string()))?,
+        };
+        let mut events = Vec::new();
+        for row in rows.by_ref() {
+            events.push(row.map_err(|error| AppError::Database(error.to_string()))?);
+        }
+        Ok(events)
+    }
+
+    /// 讀取某個工作階段的聚合失敗轉移事件（依嘗試順序）。
+    pub fn get_stack_fallback_events_by_session(
+        &self,
+        session_id: &str,
+        limit: u32,
+    ) -> Result<Vec<StackFallbackEvent>, AppError> {
+        let conn = lock_conn!(self.conn);
+        let limit = limit.clamp(1, 500) as i64;
+        let mut statement = conn
+            .prepare(
+                "SELECT id, session_id, app_type, logical_model, attempt_index,
+                        failed_provider_id, next_provider_id, next_model,
+                        error_class, created_at
+                 FROM stack_fallback_events
+                 WHERE session_id = ?1
+                 ORDER BY attempt_index ASC, id ASC
+                 LIMIT ?2",
+            )
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        let mut rows = statement
+            .query_map(
+                rusqlite::params![session_id, limit],
+                map_stack_fallback_event,
+            )
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        let mut events = Vec::new();
+        for row in rows.by_ref() {
+            events.push(row.map_err(|error| AppError::Database(error.to_string()))?);
+        }
+        Ok(events)
+    }
+
+    /// 請求日誌對應的工作階段 id（可能沒有）。
+    pub fn get_request_session_id(&self, request_id: &str) -> Result<Option<String>, AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.query_row(
+            "SELECT session_id FROM proxy_request_logs WHERE request_id = ?1",
+            rusqlite::params![request_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(|value| value.flatten())
+        .map_err(|error| AppError::Database(error.to_string()))
     }
 
     /// 更新应用级代理配置

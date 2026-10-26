@@ -37,6 +37,7 @@ type RequestLogsKey = {
   providerName?: string;
   model?: string;
   statusCode?: number;
+  onlyFailures?: boolean;
 };
 
 // Query keys
@@ -364,6 +365,7 @@ export function useRequestLogs({
     providerName: filters.providerName,
     model: filters.model,
     statusCode: filters.statusCode,
+    onlyFailures: filters.onlyFailures,
   };
 
   return useQuery({

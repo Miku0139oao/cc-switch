@@ -699,7 +699,6 @@ impl ProviderRouter {
     }
 
     /// 获取熔断器状态
-    #[allow(dead_code)]
     pub async fn get_circuit_breaker_stats(
         &self,
         provider_id: &str,

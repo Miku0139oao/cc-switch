@@ -1,5 +1,10 @@
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { useQuery } from "@tanstack/react-query";
+import { ArrowRight } from "lucide-react";
+import type { AppId } from "@/lib/api";
+import { providersQueryOptions } from "@/lib/query";
+import { useStackFallbackEventsForRequest } from "@/lib/query/proxy";
 import { Button } from "@/components/ui/button";
 import { Notice } from "@/components/ui/notice";
 import {
@@ -317,6 +322,66 @@ function useDetailSections(request: RequestLog) {
   return { basic, tokens, cost, performance };
 }
 
+/**
+ * 聚合請求的換家軌跡：後端 `stack_fallback_events` 用 session_id 關聯到這個請求。
+ * 只有真的換過家才顯示；路由模式的一般請求不會有紀錄。
+ */
+function RoutingTrace({ request }: { request: RequestLog }) {
+  const { t } = useTranslation();
+  const { data: events } = useStackFallbackEventsForRequest(request.requestId);
+  const appType = request.appType as AppId;
+  // 共用主畫面的 providers 快取（key 和資料形狀都一致），避免同一個 key 被兩種
+  // 不同形狀的 queryFn 覆蓋。
+  const { data: providerData } = useQuery({
+    ...providersQueryOptions(appType),
+    enabled: Boolean(request.appType),
+    staleTime: 30_000,
+  });
+
+  if (!events || events.length === 0) return null;
+
+  const nameOf = (id: string) => providerData?.providers?.[id]?.name ?? id;
+
+  return (
+    <section className="flex flex-col gap-2">
+      <h3 className="m-0 text-strong font-semibold text-fg-1">
+        {t("usage.detail.routingTrace", { defaultValue: "路由軌跡" })}
+      </h3>
+      <div className="divide-y divide-border overflow-hidden rounded-panel border border-border">
+        {events.map((event) => (
+          <div
+            key={event.id}
+            className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 px-3.5 py-2 text-caption"
+          >
+            <span className="shrink-0 rounded-full border border-border px-1.5 py-0.5 font-mono text-badge tabular-nums text-fg-2">
+              #{event.attemptIndex + 1}
+            </span>
+            <span className="min-w-0 truncate text-body text-fg-1">
+              {nameOf(event.failedProviderId)}
+            </span>
+            <ArrowRight className="h-3 w-3 shrink-0 text-fg-3" />
+            <span className="min-w-0 truncate text-body font-medium text-fg-1">
+              {nameOf(event.nextProviderId)}
+              <span className="ms-1.5 font-mono text-caption font-normal text-fg-3">
+                {event.nextModel}
+              </span>
+            </span>
+            <span className="ms-auto shrink-0 rounded-full bg-warning-soft px-2 py-0.5 text-badge text-warning-text">
+              {event.errorClass}
+            </span>
+            <code
+              className="w-full truncate font-mono text-caption text-fg-3"
+              title={event.logicalModel}
+            >
+              {event.logicalModel}
+            </code>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function RequestDetailBody({ request }: { request: RequestLog }) {
   const { t } = useTranslation();
   const { currency } = useMoneyFormat();
@@ -336,6 +401,7 @@ function RequestDetailBody({ request }: { request: RequestLog }) {
         title={t("usage.detail.performance")}
         rows={sections.performance}
       />
+      <RoutingTrace request={request} />
       {request.errorMessage && (
         <section className="flex flex-col gap-2">
           <h3 className="m-0 text-strong font-semibold text-danger-text">

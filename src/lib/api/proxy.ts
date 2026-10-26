@@ -15,6 +15,7 @@ import type {
   BalanceStrategy,
   AppCapabilities,
   DashboardSnapshot,
+  StackFallbackEvent,
 } from "@/types/proxy";
 
 export const proxyApi = {
@@ -106,6 +107,24 @@ export const proxyApi = {
   // Stack 模型名单：每一家和它发布的模型 id，以及提示
   async getProxyStack(appType: string): Promise<ProxyStack> {
     return invoke("get_proxy_stack", { appType });
+  },
+
+  /** 最近的聚合失敗轉移事件（新的在前）。不給 appType 時讀所有應用。 */
+  async getStackFallbackEvents(
+    appType?: string,
+    limit = 50,
+  ): Promise<StackFallbackEvent[]> {
+    return invoke("get_stack_fallback_events", {
+      appType: appType ?? null,
+      limit,
+    });
+  },
+
+  /** 某個請求的聚合換家軌跡（依 session_id 關聯）。 */
+  async getStackFallbackEventsForRequest(
+    requestId: string,
+  ): Promise<StackFallbackEvent[]> {
+    return invoke("get_stack_fallback_events_for_request", { requestId });
   },
 
   // 把一家加入或移出 Stack 模型（enabled 是目标值）。成功时返回客户端看不到或看不全 Stack 模型

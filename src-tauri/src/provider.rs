@@ -815,6 +815,10 @@ pub struct UniversalProvider {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "sortIndex")]
     pub sort_index: Option<usize>,
+    /// 上次成功同步的時間戳（秒）。`None` = 從未成功同步過。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "lastSyncedAt")]
+    pub last_synced_at: Option<i64>,
 }
 
 impl UniversalProvider {
@@ -841,6 +845,7 @@ impl UniversalProvider {
             meta: None,
             created_at: Some(chrono::Utc::now().timestamp_millis()),
             sort_index: None,
+            last_synced_at: None,
         }
     }
 

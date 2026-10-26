@@ -5,7 +5,6 @@ import { CodexOAuthSection } from "@/components/providers/forms/CodexOAuthSectio
 import { XaiOAuthSection } from "@/components/providers/forms/XaiOAuthSection";
 import { AgyOAuthSection } from "@/components/providers/forms/AgyOAuthSection";
 import { KimiAccountLogin } from "@/components/providers/KimiAccountLogin";
-import { GlobalSupplierAccounts } from "@/components/settings/auth/GlobalSupplierAccounts";
 import { isMac } from "@/lib/platform";
 import type { AuthCenterTarget } from "@/lib/api";
 
@@ -70,7 +69,6 @@ export function AuthCenterPanel({
           {t("settings.authCenter.description")}
         </p>
       )}
-      <GlobalSupplierAccounts />
       <div ref={copilotSectionRef} className="scroll-mt-4">
         <CopilotAuthSection />
       </div>

@@ -58,6 +58,12 @@ import { StackSettingsSheet } from "./StackSettingsSheet";
 import { useDesktopConfigMessages } from "./useDesktopConfigMessages";
 import { StackFallbackEditor } from "./StackFallbackEditor";
 import { StackLoadBalancePanel } from "./StackLoadBalancePanel";
+import { StackRouteDiagnostics } from "./StackRouteDiagnostics";
+import { StackRoutingEvents } from "./StackRoutingEvents";
+import {
+  StackWorkspaceTabs,
+  type StackWorkspaceTab,
+} from "./StackWorkspaceTabs";
 
 type ListCallbacks = Pick<
   React.ComponentProps<typeof ProviderList>,
@@ -68,6 +74,7 @@ type ListCallbacks = Pick<
   | "onOpenWebsite"
   | "onOpenTerminal"
   | "onCreate"
+  | "onManageGlobal"
   | "searchOpen"
   | "onSearchOpenChange"
 >;
@@ -158,6 +165,8 @@ export function SwitchModePanel({
   const [dialog, setDialog] = useState<ModeDialogState | null>(null);
   const [routeSettingsOpen, setRouteSettingsOpen] = useState(false);
   const [stackSettingsOpen, setStackSettingsOpen] = useState(false);
+  // 聚合頁的工作台分區：成員 / 模型與路由 / 平衡 / 診斷。
+  const [stackTab, setStackTab] = useState<StackWorkspaceTab>("members");
   const [confirmFailover, setConfirmFailover] = useState(false);
   // 关掉的是哪一份提示（后端的 staleRevision）：目录或登录又变了就是新的一份，重新显示。
   const [staleDismissed, setStaleDismissed] = useState<string | null>(null);
@@ -302,6 +311,9 @@ export function SwitchModePanel({
         active === "stack"
           ? void onSwitch(provider)
           : void rememberDefault(provider),
+      // 拖曳只換非預設成員的順序；預設那家的位置由 proxy_route 決定，不會被拖動。
+      stackReorder: (providerIds: string[]) =>
+        reorderStackMembers.mutate({ appType: app, providerIds }),
     },
   };
 
@@ -523,7 +535,7 @@ export function SwitchModePanel({
       />,
     );
   }
-  if (view !== active) {
+  if (view !== active && !(view === "stack" && isStackAppId(app))) {
     const cta =
       view === "route"
         ? t("mode.activate.route")
@@ -620,7 +632,7 @@ export function SwitchModePanel({
             : undefined
         }
         onOpenStackSettings={
-          app === "codex" && view === "stack" && active === "stack"
+          app === "codex" && view === "stack"
             ? () => setStackSettingsOpen(true)
             : undefined
         }
@@ -638,28 +650,64 @@ export function SwitchModePanel({
         )}
         {view === "stack" && isStackAppId(app) && (
           <>
-            <StackLoadBalancePanel
-              app={app}
-              stack={stack}
-              providers={providers}
+            <StackWorkspaceTabs
+              active={active === "stack"}
+              tab={stackTab}
+              onTab={setStackTab}
+              defaultName={nameOf(routeId)}
+              memberCount={stack?.members.length ?? 0}
+              publishedModels={(stack?.members ?? []).reduce(
+                (sum, member) => sum + member.modelIds.length,
+                0,
+              )}
+              strategy={t(
+                `mode.balance.strategies.${stack?.balanceStrategy ?? "priority"}.label`,
+              )}
+              onActivate={() => setDialog({ kind: "enter", target: "stack" })}
             />
-            <StackFallbackEditor
-              app={app}
-              stack={stack}
-              providers={providers}
-            />
+            {stackTab === "models" && (
+              <StackFallbackEditor
+                app={app}
+                stack={stack}
+                providers={providers}
+              />
+            )}
+            {stackTab === "balance" && (
+              <StackLoadBalancePanel
+                app={app}
+                stack={stack}
+                providers={providers}
+              />
+            )}
+            {stackTab === "diagnostics" && (
+              <>
+                <StackRouteDiagnostics
+                  app={app}
+                  stack={stack}
+                  providers={providers}
+                />
+                <StackRoutingEvents
+                  app={app}
+                  providers={providers}
+                  enabled={active === "stack"}
+                />
+              </>
+            )}
           </>
         )}
-        <ProviderList
-          {...listCallbacks}
-          providers={providers}
-          currentProviderId={currentProviderId}
-          appId={app}
-          isLoading={isLoading}
-          onSwitch={(provider) => void onSwitch(provider)}
-          switchMode={switchMode}
-          searchSlot={searchSlot}
-        />
+        {(!(view === "stack" && isStackAppId(app)) ||
+          stackTab === "members") && (
+          <ProviderList
+            {...listCallbacks}
+            providers={providers}
+            currentProviderId={currentProviderId}
+            appId={app}
+            isLoading={isLoading}
+            onSwitch={(provider) => void onSwitch(provider)}
+            switchMode={switchMode}
+            searchSlot={searchSlot}
+          />
+        )}
       </div>
 
       <ModeDialog

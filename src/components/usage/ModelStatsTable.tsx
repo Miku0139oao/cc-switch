@@ -21,6 +21,8 @@ interface ModelStatsTableProps {
   providerName?: string;
   model?: string;
   refreshIntervalMs: number;
+  /** 點模型名稱 → 到請求日誌並帶上這個篩選 */
+  onDrillDown?: (model: string) => void;
 }
 
 export function ModelStatsTable({
@@ -29,6 +31,7 @@ export function ModelStatsTable({
   providerName,
   model,
   refreshIntervalMs,
+  onDrillDown,
 }: ModelStatsTableProps) {
   const { t, i18n } = useTranslation();
   const { money, moneyTitle } = useMoneyFormat();
@@ -96,7 +99,18 @@ export function ModelStatsTable({
               pagination.pageRows.map((stat) => (
                 <tr key={stat.model} className={usageTable.row}>
                   <td className={cn(usageTable.td, usageTable.mono)}>
-                    <span title={stat.model}>{stat.model}</span>
+                    {onDrillDown ? (
+                      <button
+                        type="button"
+                        title={stat.model}
+                        className="min-w-0 truncate text-start underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        onClick={() => onDrillDown(stat.model)}
+                      >
+                        {stat.model}
+                      </button>
+                    ) : (
+                      <span title={stat.model}>{stat.model}</span>
+                    )}
                   </td>
                   <td className={usageTable.td}>
                     {fmtInt(stat.requestCount, locale)}

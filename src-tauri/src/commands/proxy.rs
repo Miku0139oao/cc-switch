@@ -2,6 +2,7 @@
 //!
 //! 提供前端调用的 API 接口
 
+use crate::database::StackFallbackEvent;
 use crate::error::AppError;
 use crate::proxy::types::*;
 use crate::proxy::{CircuitBreakerConfig, CircuitBreakerStats};
@@ -676,8 +677,43 @@ pub async fn get_circuit_breaker_stats(
     app_type: String,
 ) -> Result<Option<CircuitBreakerStats>, String> {
     require_mode_app(&app_type)?;
-    // 这个功能需要访问运行中的代理服务器的内存状态
-    // 目前先返回 None，后续可以通过 ProxyService 暴露接口来实现
-    let _ = (state, provider_id, app_type);
-    Ok(None)
+    Ok(state
+        .proxy_service
+        .get_provider_circuit_breaker_stats(&provider_id, &app_type)
+        .await)
+}
+
+/// 最近的聚合失败转移事件。`app_type` 为空时返回所有应用；`limit` 默认 50，上限 500。
+#[tauri::command]
+pub async fn get_stack_fallback_events(
+    state: tauri::State<'_, AppState>,
+    app_type: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<StackFallbackEvent>, String> {
+    if let Some(ref app) = app_type {
+        require_mode_app(app)?;
+    }
+    state
+        .db
+        .get_stack_fallback_events(app_type.as_deref(), limit.unwrap_or(50))
+        .map_err(|error| error.to_string())
+}
+
+/// 某個請求對應的聚合換家軌跡：先找請求的 session_id，再讀該工作階段的事件。
+#[tauri::command]
+pub async fn get_stack_fallback_events_for_request(
+    state: tauri::State<'_, AppState>,
+    request_id: String,
+) -> Result<Vec<StackFallbackEvent>, String> {
+    let Some(session_id) = state
+        .db
+        .get_request_session_id(&request_id)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(Vec::new());
+    };
+    state
+        .db
+        .get_stack_fallback_events_by_session(&session_id, 100)
+        .map_err(|error| error.to_string())
 }

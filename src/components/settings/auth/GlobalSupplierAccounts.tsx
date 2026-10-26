@@ -1,6 +1,7 @@
 import {
   Check,
   Download,
+  Info,
   Loader2,
   Pencil,
   Plus,
@@ -8,6 +9,7 @@ import {
   Search,
   ShieldCheck,
   Trash2,
+  UsersRound,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -17,6 +19,7 @@ import type {
   Provider,
   UniversalProvider,
   UniversalProvidersMap,
+  UniversalProviderStatus,
 } from "@/types";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import {
@@ -25,7 +28,6 @@ import {
 } from "@/utils/providerConfigUtils";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Button } from "@/components/ui/button";
-import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -41,19 +43,13 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
-
-type SharedAgentId = "claude" | "codex" | "gemini";
-
-const SHARED_AGENTS: {
-  id: SharedAgentId;
-  name: string;
-  short: string;
-  color: string;
-}[] = [
-  { id: "claude", name: "Claude Code", short: "CC", color: "#d97757" },
-  { id: "codex", name: "Codex", short: "CX", color: "#6aa7ff" },
-  { id: "gemini", name: "Gemini CLI", short: "GM", color: "#a889ff" },
-];
+import { GlobalSupplierAgentDialog } from "./GlobalSupplierAgentDialog";
+import { GlobalProviderDetailSheet } from "./GlobalProviderDetailSheet";
+import {
+  GlobalProviderImpactDialog,
+  type GlobalProviderImpactMode,
+} from "./GlobalProviderImpactDialog";
+import { SHARED_AGENTS, type SharedAgentId } from "./sharedAgents";
 
 interface ImportProviderOption {
   app: SharedAgentId;
@@ -195,9 +191,19 @@ function AgentChip({ agent }: { agent: (typeof SHARED_AGENTS)[number] }) {
   );
 }
 
-export function GlobalSupplierAccounts() {
+export function GlobalSupplierAccounts({
+  initialDetailId,
+  onInitialDetailHandled,
+}: {
+  /** 從 Agent 頁的「管理全域供應商」進來時要直接打開的那一家 */
+  initialDetailId?: string | null;
+  onInitialDetailHandled?: () => void;
+} = {}) {
   const { t } = useTranslation();
   const [providers, setProviders] = useState<UniversalProvidersMap>({});
+  const [statuses, setStatuses] = useState<
+    Record<string, UniversalProviderStatus>
+  >({});
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [agent, setAgent] = useState<SharedAgentId | "all">("all");
@@ -208,14 +214,28 @@ export function GlobalSupplierAccounts() {
   const [importRows, setImportRows] = useState<ImportProviderOption[]>([]);
   const [saving, setSaving] = useState(false);
   const [syncingId, setSyncingId] = useState<string | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<UniversalProvider | null>(
+  const [assignTarget, setAssignTarget] = useState<UniversalProvider | null>(
     null,
   );
+  const [detailTarget, setDetailTarget] = useState<UniversalProvider | null>(
+    null,
+  );
+  const [impact, setImpact] = useState<{
+    mode: GlobalProviderImpactMode;
+    provider: UniversalProvider;
+  } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setProviders(await universalProvidersApi.getAll());
+      const nextProviders = await universalProvidersApi.getAll();
+      const nextStatuses = await universalProvidersApi
+        .getStatuses()
+        .catch(() => []);
+      setProviders(nextProviders);
+      setStatuses(
+        Object.fromEntries(nextStatuses.map((status) => [status.id, status])),
+      );
     } catch (error) {
       toast.error(
         t("authCenter.providers.loadFailed", {
@@ -231,6 +251,15 @@ export function GlobalSupplierAccounts() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 從 Agent 頁的「管理全域供應商」進來：名單載入後直接打開那一家的詳情。
+  useEffect(() => {
+    if (!initialDetailId) return;
+    const provider = providers[initialDetailId];
+    if (!provider) return;
+    setDetailTarget(provider);
+    onInitialDetailHandled?.();
+  }, [initialDetailId, onInitialDetailHandled, providers]);
 
   const rows = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase();
@@ -250,6 +279,18 @@ export function GlobalSupplierAccounts() {
           a.name.localeCompare(b.name),
       );
   }, [agent, providers, search]);
+
+  const agentCounts = useMemo(
+    () =>
+      Object.fromEntries(
+        SHARED_AGENTS.map((item) => [
+          item.id,
+          Object.values(providers).filter((provider) => provider.apps[item.id])
+            .length,
+        ]),
+      ) as Record<SharedAgentId, number>,
+    [providers],
+  );
 
   const openNew = () => {
     setEditing(null);
@@ -296,7 +337,7 @@ export function GlobalSupplierAccounts() {
     setFormOpen(true);
   };
 
-  const save = async (provider: UniversalProvider) => {
+  const save = async (provider: UniversalProvider): Promise<boolean> => {
     setSaving(true);
     try {
       await universalProvidersApi.upsert(provider);
@@ -308,6 +349,7 @@ export function GlobalSupplierAccounts() {
         }),
         { closeButton: true },
       );
+      return true;
     } catch (error) {
       toast.error(
         t("authCenter.providers.saveFailed", {
@@ -315,8 +357,15 @@ export function GlobalSupplierAccounts() {
         }),
         { description: extractErrorMessage(error) },
       );
+      return false;
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveAssignment = async (provider: UniversalProvider) => {
+    if (await save(provider)) {
+      setAssignTarget(null);
     }
   };
 
@@ -324,6 +373,7 @@ export function GlobalSupplierAccounts() {
     setSyncingId(provider.id);
     try {
       await universalProvidersApi.sync(provider.id);
+      await load();
       toast.success(
         t("authCenter.providers.synced", {
           defaultValue: "已同步到各 Agent",
@@ -342,11 +392,11 @@ export function GlobalSupplierAccounts() {
     }
   };
 
-  const remove = async () => {
-    if (!deleteTarget) return;
+  const remove = async (provider: UniversalProvider) => {
     try {
-      await universalProvidersApi.delete(deleteTarget.id);
-      setDeleteTarget(null);
+      await universalProvidersApi.delete(provider.id);
+      setImpact(null);
+      setDetailTarget(null);
       await load();
       toast.success(
         t("authCenter.providers.deleted", {
@@ -360,6 +410,17 @@ export function GlobalSupplierAccounts() {
         }),
         { description: extractErrorMessage(error) },
       );
+    }
+  };
+
+  const confirmImpact = async () => {
+    if (!impact) return;
+    const { mode, provider } = impact;
+    setImpact(null);
+    if (mode === "sync") {
+      await sync(provider);
+    } else {
+      await remove(provider);
     }
   };
 
@@ -381,9 +442,20 @@ export function GlobalSupplierAccounts() {
           <p className="m-0 mt-0.5 text-caption text-fg-2">
             {t("authCenter.providers.description", {
               defaultValue:
-                "集中管理 API Key 與 Endpoint；每個 Agent 仍各自選擇要使用的供應商。",
+                "集中管理 API Key 與 Endpoint；選擇要提供給哪些 Agent，各 Agent 仍自行決定是否使用。",
             })}
           </p>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-caption text-fg-3">
+            {SHARED_AGENTS.map((item) => (
+              <span key={item.id} className="inline-flex items-center gap-1.5">
+                <span
+                  className="h-1.5 w-1.5 rounded-full"
+                  style={{ backgroundColor: item.color }}
+                />
+                {item.short} {agentCounts[item.id]}
+              </span>
+            ))}
+          </div>
         </div>
         <Button
           type="button"
@@ -432,11 +504,12 @@ export function GlobalSupplierAccounts() {
             <SelectItem value="all">
               {t("authCenter.providers.allAgents", {
                 defaultValue: "全部 Agent",
-              })}
+              })}{" "}
+              · {Object.keys(providers).length}
             </SelectItem>
             {SHARED_AGENTS.map((item) => (
               <SelectItem key={item.id} value={item.id}>
-                {item.name}
+                {item.name} · {agentCounts[item.id]}
               </SelectItem>
             ))}
           </SelectContent>
@@ -482,10 +555,42 @@ export function GlobalSupplierAccounts() {
         <div className="divide-y divide-border">
           {rows.map((provider) => {
             const agents = enabledAgents(provider);
+            const status = statuses[provider.id];
+            const childStates = (status?.children ?? []).flatMap((child) => {
+              const agent = SHARED_AGENTS.find(
+                (candidate) => candidate.id === child.app,
+              );
+              if (!agent) return [];
+              const labels = [
+                child.inUse
+                  ? t("authCenter.providers.agentState.inUse", {
+                      defaultValue: "使用中",
+                    })
+                  : null,
+                child.inStack
+                  ? t("authCenter.providers.agentState.inStack", {
+                      defaultValue: "聚合中",
+                    })
+                  : null,
+                child.inFailoverQueue
+                  ? t("authCenter.providers.agentState.inFailover", {
+                      defaultValue: "故障轉移",
+                    })
+                  : null,
+                child.exists && child.inSync === false
+                  ? t("authCenter.providers.agentState.outOfSync", {
+                      defaultValue: "未同步",
+                    })
+                  : null,
+              ].filter(Boolean);
+              return labels.length > 0
+                ? [`${agent.short} ${labels.join(" / ")}`]
+                : [];
+            });
             return (
               <div
                 key={provider.id}
-                className="grid min-w-0 grid-cols-[minmax(190px,1.4fr)_minmax(160px,1fr)_minmax(130px,.8fr)_auto] items-center gap-3 px-4 py-2.5 hover:bg-subtle/30"
+                className="grid min-w-0 grid-cols-1 items-center gap-3 px-4 py-3 hover:bg-subtle/30 lg:grid-cols-[minmax(190px,1.4fr)_minmax(160px,1fr)_minmax(130px,.8fr)_auto] lg:py-2.5"
               >
                 <div className="flex min-w-0 items-center gap-3">
                   <ProviderIcon
@@ -528,8 +633,40 @@ export function GlobalSupplierAccounts() {
                       })}
                     </span>
                   )}
+                  {childStates.length > 0 && (
+                    <div className="mt-1 basis-full text-caption text-fg-3">
+                      {childStates.join(" · ")}
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center justify-end gap-1">
+                  <Button
+                    type="button"
+                    variant="quiet"
+                    size="icon-compact"
+                    aria-label={t("globalProviders.detail.open", {
+                      defaultValue: "{{name}} 的詳情",
+                      name: provider.name,
+                    })}
+                    onClick={() => setDetailTarget(provider)}
+                  >
+                    <Info className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="quiet"
+                    size="compact"
+                    aria-label={t("authCenter.providers.assignFor", {
+                      defaultValue: "分配 {{name}} 給 Agent",
+                      name: provider.name,
+                    })}
+                    onClick={() => setAssignTarget(provider)}
+                  >
+                    <UsersRound className="h-3.5 w-3.5" />
+                    {t("authCenter.providers.assign", {
+                      defaultValue: "分配",
+                    })}
+                  </Button>
                   <Button
                     type="button"
                     variant="quiet"
@@ -539,7 +676,7 @@ export function GlobalSupplierAccounts() {
                       name: provider.name,
                     })}
                     disabled={syncingId === provider.id}
-                    onClick={() => void sync(provider)}
+                    onClick={() => setImpact({ mode: "sync", provider })}
                   >
                     {syncingId === provider.id ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -566,7 +703,7 @@ export function GlobalSupplierAccounts() {
                       defaultValue: "刪除 {{name}}",
                       name: provider.name,
                     })}
-                    onClick={() => setDeleteTarget(provider)}
+                    onClick={() => setImpact({ mode: "delete", provider })}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
@@ -668,19 +805,33 @@ export function GlobalSupplierAccounts() {
         onSaveAndSync={(provider) => void save(provider)}
       />
 
-      <ConfirmDialog
-        isOpen={Boolean(deleteTarget)}
-        title={t("authCenter.providers.deleteTitle", {
-          defaultValue: "刪除全域供應商",
-        })}
-        message={t("authCenter.providers.deleteDescription", {
-          defaultValue:
-            "確定刪除「{{name}}」？各 Agent 中由它同步建立的 provider 也會一起刪除。",
-          name: deleteTarget?.name ?? "",
-        })}
-        confirmText={t("common.delete", { defaultValue: "刪除" })}
-        onConfirm={() => void remove()}
-        onCancel={() => setDeleteTarget(null)}
+      <GlobalSupplierAgentDialog
+        provider={assignTarget}
+        status={assignTarget ? statuses[assignTarget.id] : null}
+        saving={saving}
+        onClose={() => setAssignTarget(null)}
+        onSave={(provider) => void saveAssignment(provider)}
+      />
+
+      <GlobalProviderDetailSheet
+        provider={detailTarget}
+        status={detailTarget ? statuses[detailTarget.id] : undefined}
+        syncing={Boolean(detailTarget && syncingId === detailTarget.id)}
+        saving={saving}
+        onClose={() => setDetailTarget(null)}
+        onSync={(provider) => setImpact({ mode: "sync", provider })}
+        onAssign={(provider) => setAssignTarget(provider)}
+        onEdit={(provider) => openEdit(provider)}
+        onDelete={(provider) => setImpact({ mode: "delete", provider })}
+      />
+
+      <GlobalProviderImpactDialog
+        mode={impact?.mode ?? "sync"}
+        provider={impact?.provider ?? null}
+        status={impact ? statuses[impact.provider.id] : undefined}
+        busy={Boolean(impact && syncingId === impact.provider.id)}
+        onClose={() => setImpact(null)}
+        onConfirm={() => void confirmImpact()}
       />
       {saving && (
         <span className="sr-only">

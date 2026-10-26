@@ -132,6 +132,24 @@ export interface StackFallbackTarget {
 
 export type ProxyStackFallbacks = Record<string, StackFallbackTarget[]>;
 
+/**
+ * 聚合模式下一次「失敗 → 換到下一段」的紀錄。
+ * `attemptIndex` 是失敗的那一段（0 起算）；`next*` 是接下來要試的供應商與上游模型。
+ * `errorClass` 是後端歸類過的錯誤種類，不是原始錯誤字串。
+ */
+export interface StackFallbackEvent {
+  id: number;
+  sessionId: string;
+  appType: string;
+  logicalModel: string;
+  attemptIndex: number;
+  failedProviderId: string;
+  nextProviderId: string;
+  nextModel: string;
+  errorClass: string;
+  createdAt: number;
+}
+
 export type BalanceStrategy =
   | "priority"
   | "roundRobin"

@@ -14,6 +14,7 @@
     "save": "保存",
     "saving": "保存中...",
     "cancel": "キャンセル",
+    "undo": "元に戻す",
     "confirm": "確認",
     "close": "閉じる",
     "done": "完了",
@@ -2514,9 +2515,11 @@
     "prevPage": "前のページ",
     "nextPage": "次のページ",
     "statusFilter": {
-      "all": "すべてのステータス"
+      "all": "すべてのステータス",
+      "failures": "失敗のみ"
     },
     "detail": {
+      "routingTrace": "ルーティング軌跡",
       "tokensTitle": "トークン使用量",
       "costTitle": "コスト内訳（{{currency}}）",
       "performance": "パフォーマンス",
@@ -3634,6 +3637,7 @@
     "degraded": "低下",
     "failed": "失敗",
     "circuitOpen": "サーキットオープン",
+    "halfOpen": "ハーフオープン",
     "consecutiveFailures": "{{count}} 回連続失敗"
   },
   "failover": {
@@ -3900,6 +3904,8 @@
     "notes": "メモ",
     "notesPlaceholder": "オプション：メモを追加",
     "enabledApps": "有効なアプリ",
+    "availableAgents": "利用可能な Agent",
+    "availableAgentsHint": "API キーと Endpoint は 1 つだけ管理します。選択した Agent ごとにモデルを設定できます。",
     "modelConfig": "モデル設定",
     "model": "モデル",
     "sync": "アプリに同期",
@@ -4169,6 +4175,7 @@
     "agent": "エージェント",
     "mode": "モード",
     "provider": "使用中のプロバイダー",
+    "stackDefaultProvider": "集約の既定（実際はモデルと分散による）",
     "routeState": "ルーティング／集約",
     "quota": "主要クォータ",
     "directState": "直接接続",
@@ -4201,6 +4208,7 @@
     "todayRequests": "{{value}} 回",
     "todayHitRate": "ヒット {{value}}",
     "usage": "使用量",
+    "globalProviders": "グローバルプロバイダー",
     "auth": "アカウント",
     "authNeedsReauth": "再ログインが必要なアカウントがあります",
     "prompts": "プロンプト",
@@ -4280,6 +4288,20 @@
     },
     "active": "有効",
     "activeTitle": "{{mode}}が有効",
+    "workspace": {
+      "tabsLabel": "集約設定のセクション",
+      "previewTitle": "プレビュー中 · 未反映",
+      "previewHint": "設定は保存されますが、集約モードに切り替えるまでクライアントには集約モデルが表示されません。",
+      "activate": "集約モードに切り替え",
+      "tabMembers": "メンバー",
+      "tabModels": "モデルとルーティング",
+      "tabBalance": "分散",
+      "tabDiagnostics": "診断",
+      "defaultProvider": "既定",
+      "memberCount": "メンバー",
+      "publishedModels": "公開モデル",
+      "strategy": "分散"
+    },
     "noProvider": "未選択",
     "failover": "フェイルオーバー",
     "routeSettings": "ルーティング設定",
@@ -4337,6 +4359,29 @@
           "description": "新しいセッションは最も空いているプロバイダーを優先し、同負荷なら最近の応答時間で選びます。"
         }
       }
+    },
+    "diagnostics": {
+      "title": "集約ルーティング診断",
+      "description": "クライアントが表示するモデル ID、実際の優先プロバイダー、フェイルオーバー先を確認します。",
+      "active": "公開済み",
+      "inactive": "集約は現在無効",
+      "inactiveHint": "この一覧は設定を保存しているだけで、クライアントには公開されていません。CLI の /model にはネイティブモデルが表示される場合があります。先に集約モードへ切り替えてください。",
+      "defaultRoute": "現在の既定",
+      "publishedModels": "公開中のモデル",
+      "strategy": "分散ポリシー",
+      "stickySessions": "固定セッション",
+      "claudeHarnessHint": "Claude Code のシステムプロンプトに表示される Opus、Sonnet、Fable はハーネスの表示名で、実際のバックエンドとは限りません。ccs-* のモデル ID と下の「上流モデル」を基準にしてください。",
+      "noModels": "診断できる集約モデルがありません。メンバーが追加され、公開できるモデルがあるか確認してください。",
+      "fallbackPath": "失敗後",
+      "copy": "診断をコピー",
+      "copied": "集約診断をコピーしました",
+      "copyFailed": "集約診断をコピーできませんでした"
+    },
+    "routingEvents": {
+      "title": "最近のフェイルオーバー",
+      "description": "集約リクエストが失敗後に実際に切り替わった先です。ここには集約のモデル単位フェイルオーバーだけが記録され、ルーティングモードのキューは含みません。",
+      "attempt": "第 {{index}} 段",
+      "empty": "まだフェイルオーバーの記録はありません。集約リクエストがすべて成功すると記録は残りません。"
     },
     "fallback": {
       "title": "モデル候補プールとフォールバック順",
@@ -4446,6 +4491,11 @@
     }
   },
   "providerCard": {
+    "resetBreakerDone": "サーキットブレーカーをリセットしました",
+    "resetBreakerFailed": "サーキットブレーカーのリセットに失敗しました",
+    "priority": {
+      "tooltip": "#{{priority}}：集約リスト内の順序です。数字が小さいほど先に試されます。並べ替えると自動フェイルオーバーと分散候補が変わります。"
+    },
     "status": {
       "inUse": "使用中",
       "routing": "転送中",
@@ -4466,11 +4516,16 @@
       "enable": "有効にする",
       "disable": "無効にする",
       "edit": "{{name}} を編集",
+      "manageGlobal": "グローバルプロバイダーページで管理",
+      "manageGlobalFor": "{{name}} を管理（グローバルプロバイダー）",
+      "resetBreaker": "サーキットブレーカーをリセット",
       "more": "{{name}} のその他の操作",
       "moveUp": "{{name}} を上へ",
       "moveDown": "{{name}} を下へ"
     },
     "chip": {
+      "global": "グローバル",
+      "globalHint": "グローバルプロバイダーページで作成され、複数のエージェントで共有できます。ここでの追加と並べ替えは現在のエージェントにだけ影響します。",
       "official": "公式",
       "needsRoute": "ルーティングが必要",
       "directWhenDirect": "直接接続時に使用",
@@ -4506,9 +4561,16 @@
       "stackEmpty": "ほかのプロバイダーはまだ追加されていません。",
       "added": "追加済み · {{count}}",
       "addedHelpTitle": "追加済み",
-      "addedHelp": "追加したプロバイダーは {{app}} の設定に書き込まれます。#0 が最も優先され、5 時間・週間・月間の利用枠が尽きた場合は次の利用可能なメンバーへ切り替わります。",
+      "addedHelp": "追加したプロバイダーは {{app}} の設定に書き込まれます。P1 が最も優先され、5 時間・週間・月間の利用枠が尽きた場合は次の利用可能なメンバーへ切り替わります。",
       "addedEmpty": "まだプロバイダーを追加していません。",
       "available": "追加できるもの · {{count}}",
+      "globalAvailable": "グローバルプロバイダー · {{count}}",
+      "globalAvailableHelpTitle": "グローバルプロバイダー",
+      "globalAvailableHelp": "グローバルプロバイダーページで一元管理され、複数のエージェントに同期できます。ここで追加してもほかのエージェントの選択は変わりません。",
+      "agentAvailable": "このエージェントのプロバイダー · {{count}}",
+      "agentAvailableHelpTitle": "このエージェントのプロバイダー",
+      "agentAvailableHelp": "このエージェントの設定にだけ存在し、ほかのエージェントには同期されません。",
+      "stackDefaultHidden": "既定のプロバイダーは現在の検索結果に表示されていません。検索をクリアすると表示されます。",
       "stackNoDefault": "既定のプロバイダーはまだありません。集約に切り替えるときに選びます。"
     }
   },
@@ -4986,6 +5048,30 @@
       "importFailed": "既存プロバイダーを読み込めません",
       "search": "プロバイダーまたは Endpoint を検索",
       "allAgents": "すべての Agent",
+      "assign": "割り当て",
+      "assignFor": "{{name}} を Agent に割り当て",
+      "assignTitle": "{{name}} を Agent に割り当て",
+      "assignDescription": "このプロバイダーを表示する Agent を選びます。選択した Agent で選べる provider を作成するだけで、現在使用中の provider は切り替えません。",
+      "assignApply": "適用して同期",
+      "assignHint": "保存すると選択した Agent に同期されます。詳細なモデル設定は「編集」で個別に調整できます。",
+      "agentCurrentlyAvailable": "現在利用可能",
+      "agentNotAssigned": "未割り当て",
+      "agentToggle": "{{name}} に提供",
+      "agentModel": "{{name}} のメインモデル",
+      "agentModelPlaceholder": {
+        "claude": "例: deepseek-v4-pro",
+        "codex": "例: deepseek-v4-flash",
+        "gemini": "例: gemini-2.5-pro"
+      },
+      "claudeModelHint": "Haiku、Sonnet、Opus、Fable を別に設定しない場合は、このメインモデルが使われます。",
+      "agentModelRequired": "{{agents}} のモデルを入力してください。空のまま同期すると、使えない provider が作られます。",
+      "agentState": {
+        "inUse": "使用中",
+        "inStack": "集約中",
+        "inFailover": "フェイルオーバー",
+        "available": "利用可能",
+        "outOfSync": "未同期"
+      },
       "empty": "グローバルプロバイダーはまだありません",
       "emptyHint": "追加すると各 Agent で選べる provider として同期されます。現在使用中の provider は自動変更されません。",
       "sharedCredential": "共有認証情報",
@@ -5161,6 +5247,60 @@
       "renameProvider": "Oh My Pi プロバイダキーは変更できません。",
       "providerMissing": "この Oh My Pi プロバイダは保存済みリストにありません。",
       "legacyModelsJson": "Oh My Pi にはまだ旧形式の models.json があり、omp は次回起動時にこれを models.yml へ移行します。omp を一度起動してから、もう一度プロバイダを追加してください。"
+    }
+  },
+  "globalProviders": {
+    "helpTitle": "グローバルプロバイダーとは",
+    "description": "エージェント間で共有する API キーとエンドポイントを一元管理し、提供先のエージェントを選びます。",
+    "detail": {
+      "open": "{{name}} の詳細",
+      "using": "使用中",
+      "inStack": "集約中",
+      "outOfSync": "未同期",
+      "identity": "識別情報と認証情報",
+      "universalId": "グローバル id",
+      "apiKey": "共有認証情報",
+      "lastSynced": "前回の同期成功",
+      "perAgent": "Agent ごとの状態",
+      "notAssigned": "未割り当て",
+      "notPublished": "未公開",
+      "published": "公開済み",
+      "openAgent": "{{name}} を開く",
+      "childId": "子カード id",
+      "livePath": "live ファイル",
+      "changedFields": "同期で上書き：",
+      "queueHint": "フェイルオーバーキューでも使用中：{{agents}}。削除する前にその Agent で外してください。",
+      "inUseHint": "{{agents}} が使用中のため、バックエンドが削除を拒否します。先にその Agent を別のプロバイダーへ切り替えてください。",
+      "deleteBlocked": "使用中の Agent があるため削除できません",
+      "syncNow": "同期",
+      "syncNowWithChanges": "同期（{{count}} 件が未同期）"
+    },
+    "impact": {
+      "reasonInUse": "使用中のため、バックエンドが削除を拒否します",
+      "reasonCard": "この Agent の子カードが消えます",
+      "reasonStack": "集約リストから外れ、公開済みの ccs-* モデル id が無効になります",
+      "reasonQueue": "フェイルオーバーキューから外れます",
+      "reasonDisableInUse": "使用中のため無効化できません。バックエンドは同期全体を拒否します",
+      "reasonDisable": "公開がオフのため、子カードは削除されます",
+      "reasonCreate": "選択可能な子カードを作成します。現在のプロバイダーは切り替えません",
+      "reasonUpdate": "次のフィールドを上書きします：{{fields}}",
+      "reasonNoChange": "最新です。変更はありません",
+      "confirmDelete": "グローバルプロバイダーを削除",
+      "confirmSync": "同期を開始",
+      "deleteTitle": "「{{name}}」を削除しますか？",
+      "syncTitle": "「{{name}}」を各 Agent に同期しますか？",
+      "deleteLead": "以下に表示されたカードと設定が削除されます。どの Agent の現在のプロバイダーも自動では切り替えません。",
+      "syncLead": "各 Agent で選択可能な子カードを作成・更新するだけで、使用中のプロバイダーは切り替えません。",
+      "blockedDelete": "使用中の Agent があります。先に別のプロバイダーへ切り替えてから削除してください。",
+      "blockedSync": "使用中の Agent があるのに公開がオフになっています。先に切り替えるか、スイッチをオンに戻してください。",
+      "nothingToDelete": "どの Agent にも子カードがないため、グローバル設定だけを削除します。",
+      "nothingToSync": "すべての Agent が最新です。同期は不要です。",
+      "working": "処理中…",
+      "effectBlocked": "実行不可",
+      "effectCreate": "作成",
+      "effectUpdate": "更新",
+      "effectDelete": "削除",
+      "effectUnchanged": "変更なし"
     }
   }
 }

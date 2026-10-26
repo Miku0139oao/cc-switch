@@ -17,6 +17,7 @@ export type AppPage =
 export type GlobalPage =
   | "dashboard"
   | "usage"
+  | "globalProviders"
   | "auth"
   | "mcp"
   | "skills"
@@ -54,6 +55,7 @@ const APP_PAGES: AppPage[] = [
 const GLOBAL_PAGES: GlobalPage[] = [
   "dashboard",
   "usage",
+  "globalProviders",
   "auth",
   "mcp",
   "skills",

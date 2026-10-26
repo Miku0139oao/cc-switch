@@ -1770,6 +1770,8 @@ pub fn run() {
             commands::get_circuit_breaker_config,
             commands::update_circuit_breaker_config,
             commands::get_circuit_breaker_stats,
+            commands::get_stack_fallback_events,
+            commands::get_stack_fallback_events_for_request,
             // Failover queue management
             commands::get_failover_queue,
             commands::get_available_providers_for_failover,
@@ -1830,6 +1832,8 @@ pub fn run() {
             commands::upsert_universal_provider,
             commands::delete_universal_provider,
             commands::sync_universal_provider,
+            commands::get_universal_provider_statuses,
+            commands::get_universal_provider_status,
             // Custom icon library
             commands::get_custom_icons,
             commands::add_custom_icon,

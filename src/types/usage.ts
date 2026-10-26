@@ -159,6 +159,8 @@ export interface LogFilters {
   providerName?: string;
   model?: string;
   statusCode?: number;
+  /** 只看失敗（>= 400）；有 statusCode 時以 statusCode 為準。 */
+  onlyFailures?: boolean;
   startDate?: number;
   endDate?: number;
 }

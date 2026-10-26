@@ -20,6 +20,8 @@ export const proxyKeys = {
   globalConfig: ["globalProxyConfig"] as const,
   clientHost: ["proxyClientHost"] as const,
   appConfig: (appType: string) => ["appProxyConfig", appType] as const,
+  stackFallbackEvents: (appType: string | null) =>
+    ["stackFallbackEvents", appType ?? "all"] as const,
 };
 
 // ========== 代理服务器状态 Hooks ==========
@@ -91,6 +93,37 @@ export function useProxyStack(appType: string, enabled: boolean) {
   });
 }
 
+/**
+ * 最近的聚合失敗轉移事件。後端只寫入、不在請求日誌裡，這個 hook 是唯一讀取路徑。
+ * 輪詢間隔比狀態慢：事件是除錯用，不需要秒級。
+ */
+export function useStackFallbackEvents(
+  appType: string | null,
+  enabled = true,
+  limit = 50,
+) {
+  return useQuery({
+    queryKey: proxyKeys.stackFallbackEvents(appType),
+    queryFn: () => proxyApi.getStackFallbackEvents(appType ?? undefined, limit),
+    enabled,
+    refetchInterval: enabled ? 10_000 : false,
+  });
+}
+
+/** 請求詳情裡的路由軌跡：只在抽屜開啟時查一次。 */
+export function useStackFallbackEventsForRequest(
+  requestId: string | null,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ["stackFallbackEvents", "request", requestId],
+    queryFn: () =>
+      proxyApi.getStackFallbackEventsForRequest(requestId as string),
+    enabled: enabled && Boolean(requestId),
+    staleTime: Infinity,
+  });
+}
+
 function isStackWriteError(error: unknown): error is ProxyStackWriteError {
   return (
     typeof error === "object" &&
@@ -134,6 +167,27 @@ export function useSetProxyStackMember() {
             ? t("provider.stackReselectHint")
             : undefined,
           closeButton: true,
+          // 移除成員是一鍵操作：給一個短暫的「復原」，避免誤點。
+          duration: variables.enabled ? undefined : 6000,
+          action: variables.enabled
+            ? undefined
+            : {
+                label: t("common.undo"),
+                onClick: () => {
+                  void proxyApi
+                    .setProxyStackMember(
+                      variables.appType,
+                      variables.providerId,
+                      true,
+                    )
+                    .then(() =>
+                      queryClient.invalidateQueries({
+                        queryKey: ["providers", variables.appType],
+                      }),
+                    )
+                    .catch(() => undefined);
+                },
+              },
         },
       );
       if (notice) {

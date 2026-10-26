@@ -883,10 +883,39 @@ export interface UniversalProvider {
   meta?: ProviderMeta;
   createdAt?: number;
   sortIndex?: number;
+  /** 上次成功同步的時間戳（秒）；undefined = 從未成功同步過。 */
+  lastSyncedAt?: number;
 }
 
 // 统一供应商映射（id -> UniversalProvider）
 export type UniversalProvidersMap = Record<string, UniversalProvider>;
+
+/** 全域供應商在單一 Agent 的落地狀態。 */
+export interface UniversalChildStatus {
+  app: "claude" | "codex" | "gemini";
+  /** 同步產生的子卡 id（`universal-<app>-<id>`）。 */
+  childId: string;
+  /** 子卡存在（已發布給這個 Agent）。 */
+  exists: boolean;
+  /** 這個 Agent 目前使用中（直連或路由／聚合的預設）。 */
+  inUse: boolean;
+  /** 在聚合名單裡。 */
+  inStack: boolean;
+  /** 在故障轉移佇列裡。 */
+  inFailoverQueue: boolean;
+  /** 子卡與全域設定是否一致；null = 子卡不存在，無法比較。 */
+  inSync: boolean | null;
+  /** 不一致的託管欄位；空 = 一致或子卡不存在。 */
+  changedFields: string[];
+  /** 這個 Agent 的 live 設定檔路徑（僅供顯示）。 */
+  livePath: string;
+}
+
+export interface UniversalProviderStatus {
+  id: string;
+  children: UniversalChildStatus[];
+  lastSyncedAt?: number;
+}
 
 // ============================================================================
 // OpenCode 专属配置（v3.9.2+）

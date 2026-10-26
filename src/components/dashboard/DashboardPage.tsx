@@ -371,6 +371,11 @@ export function DashboardPage({
                       <div className="truncate text-body text-fg-1">
                         {provider?.name ?? t("mode.noProvider")}
                       </div>
+                      {effectiveMode === "stack" && (
+                        <div className="text-caption text-fg-3">
+                          {t("dashboard.stackDefaultProvider")}
+                        </div>
+                      )}
                       {health && health.consecutive_failures > 0 && (
                         <div className="flex items-center gap-1 text-caption text-warning-text">
                           <CircleAlert className="h-3 w-3" />

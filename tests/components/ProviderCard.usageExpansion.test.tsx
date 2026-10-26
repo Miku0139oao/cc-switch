@@ -21,6 +21,8 @@ vi.mock("@/components/SubscriptionQuotaFooter", () => ({
 }));
 vi.mock("@/lib/query/failover", () => ({
   useProviderHealth: () => ({ data: undefined }),
+  useCircuitBreakerStats: () => ({ data: undefined }),
+  useResetCircuitBreaker: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 function renderCard({

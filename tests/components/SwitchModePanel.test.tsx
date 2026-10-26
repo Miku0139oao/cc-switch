@@ -435,9 +435,7 @@ describe("SwitchModePanel — Claude Desktop", () => {
     await user.click(
       await screen.findByRole("button", { name: /mode\.names\.stack/ }),
     );
-    await user.click(
-      screen.getByRole("button", { name: "mode.activate.stack" }),
-    );
+    await user.click(screen.getByRole("button", { name: "切換到聚合模式" }));
     expect(
       await screen.findByText("mode.dialog.desktopStackNoteMembers"),
     ).toBeVisible();
@@ -556,9 +554,7 @@ describe("SwitchModePanel — mode layer", () => {
     await user.click(
       await screen.findByRole("button", { name: /mode\.names\.stack/ }),
     );
-    await user.click(
-      screen.getByRole("button", { name: "mode.activate.stack" }),
-    );
+    await user.click(screen.getByRole("button", { name: "切換到聚合模式" }));
     expect(await screen.findByText("mode.dialog.stackTitle")).toBeVisible();
 
     // 经典工具默认开着：选了别家的模型也不用提醒
@@ -628,9 +624,7 @@ describe("SwitchModePanel — mode layer", () => {
     await user.click(
       await screen.findByRole("button", { name: /mode\.names\.stack/ }),
     );
-    await user.click(
-      screen.getByRole("button", { name: "mode.activate.stack" }),
-    );
+    await user.click(screen.getByRole("button", { name: "切換到聚合模式" }));
     await screen.findByRole("combobox", {
       name: "mode.stackSettings.subagentModel",
     });
@@ -660,9 +654,7 @@ describe("SwitchModePanel — mode layer", () => {
     ).toEqual(["add-kimi", "menu-setDefault-kimi"]);
     expect(screen.getByTestId("add-kimi")).not.toBeDisabled();
 
-    await user.click(
-      screen.getByRole("button", { name: "mode.activate.stack" }),
-    );
+    await user.click(screen.getByRole("button", { name: "切換到聚合模式" }));
     expect(await screen.findByText("mode.dialog.stackTitle")).toBeVisible();
     // 预选直连那家，可以在框里换
     const select = screen.getByRole("combobox", {
@@ -741,9 +733,7 @@ describe("SwitchModePanel — mode layer", () => {
     ).not.toBeInTheDocument();
 
     // 确认框预选它
-    await user.click(
-      screen.getByRole("button", { name: "mode.activate.stack" }),
-    );
+    await user.click(screen.getByRole("button", { name: "切換到聚合模式" }));
     expect(
       await screen.findByRole("combobox", { name: "mode.dialog.stackDefault" }),
     ).toHaveTextContent("kimi");
@@ -827,7 +817,7 @@ describe("SwitchModePanel — mode layer", () => {
       await screen.findByRole("button", { name: /mode\.names\.stack/ }),
     );
     await user.click(
-      await screen.findByRole("button", { name: "mode.activate.stack" }),
+      await screen.findByRole("button", { name: "切換到聚合模式" }),
     );
     const select = await screen.findByRole("combobox", {
       name: "mode.dialog.stackDefault",

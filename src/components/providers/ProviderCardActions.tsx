@@ -18,6 +18,7 @@ import {
   PowerOff,
   Route,
   SquareTerminal,
+  Boxes,
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -75,6 +76,12 @@ interface ProviderCardActionsProps {
   isTesting?: boolean;
   onConfigureUsage?: () => void;
   onOpenTerminal?: () => void;
+  /** 這張卡是由全域供應商同步出來的：編輯／刪除要回到全域供應商頁 */
+  managedGlobally?: boolean;
+  onManageGlobal?: () => void;
+  /** 熔斷器 Open / HalfOpen 時出現在 ⋯ 裡 */
+  onResetBreaker?: () => void;
+  resettingBreaker?: boolean;
 }
 
 /**
@@ -93,6 +100,10 @@ export function ProviderCardActions({
   isTesting,
   onConfigureUsage,
   onOpenTerminal,
+  managedGlobally = false,
+  onManageGlobal,
+  onResetBreaker,
+  resettingBreaker,
 }: ProviderCardActionsProps) {
   const { t } = useTranslation();
   const { status, buttons, move, menuItems = [] } = presentation;
@@ -149,19 +160,39 @@ export function ProviderCardActions({
         </div>
       )}
 
-      <IconAction
-        tip={t("common.edit")}
-        disabledReason={presentation.editDisabledReason}
-      >
-        <Button
-          variant="quiet"
-          size="icon-compact"
-          aria-label={t("providerCard.action.edit", { name: providerName })}
-          onClick={onEdit}
+      {managedGlobally && onManageGlobal ? (
+        <IconAction
+          tip={t("providerCard.action.manageGlobal", {
+            defaultValue: "在全域供應商頁管理",
+          })}
         >
-          <Pencil className="h-4 w-4" strokeWidth={1.5} />
-        </Button>
-      </IconAction>
+          <Button
+            variant="quiet"
+            size="icon-compact"
+            aria-label={t("providerCard.action.manageGlobalFor", {
+              defaultValue: "管理 {{name}}（全域供應商）",
+              name: providerName,
+            })}
+            onClick={onManageGlobal}
+          >
+            <Boxes className="h-4 w-4" strokeWidth={1.5} />
+          </Button>
+        </IconAction>
+      ) : (
+        <IconAction
+          tip={t("common.edit")}
+          disabledReason={presentation.editDisabledReason}
+        >
+          <Button
+            variant="quiet"
+            size="icon-compact"
+            aria-label={t("providerCard.action.edit", { name: providerName })}
+            onClick={onEdit}
+          >
+            <Pencil className="h-4 w-4" strokeWidth={1.5} />
+          </Button>
+        </IconAction>
+      )}
 
       <DropdownMenu>
         <HoverTip content={t("common.more")}>
@@ -178,6 +209,16 @@ export function ProviderCardActions({
           </DropdownMenuTrigger>
         </HoverTip>
         <DropdownMenuContent align="end" className="min-w-[180px]">
+          {managedGlobally && onManageGlobal && (
+            <>
+              <DropdownMenuItem onSelect={onManageGlobal}>
+                {t("providerCard.action.manageGlobal", {
+                  defaultValue: "在全域供應商頁管理",
+                })}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          )}
           {menuItems.map((item) => (
             <ModeMenuItem key={item.key} item={item} />
           ))}
@@ -203,21 +244,35 @@ export function ProviderCardActions({
               {t("provider.openTerminal")}
             </DropdownMenuItem>
           )}
-          {(onDuplicate || onTest || onConfigureUsage || onOpenTerminal) && (
-            <DropdownMenuSeparator />
+          {onResetBreaker && (
+            <DropdownMenuItem
+              disabled={resettingBreaker}
+              onSelect={onResetBreaker}
+            >
+              {t("providerCard.action.resetBreaker", {
+                defaultValue: "重置斷路器",
+              })}
+            </DropdownMenuItem>
           )}
-          <DropdownMenuItem
-            disabled={Boolean(presentation.deleteDisabledReason)}
-            onSelect={onDelete}
-            className="flex-col items-start gap-0.5 text-danger-text focus:text-danger-text"
-          >
-            {t("common.delete")}
-            {presentation.deleteDisabledReason && (
-              <span className="text-caption text-fg-3">
-                {presentation.deleteDisabledReason}
-              </span>
-            )}
-          </DropdownMenuItem>
+          {(onDuplicate ||
+            onTest ||
+            onConfigureUsage ||
+            onOpenTerminal ||
+            onResetBreaker) && <DropdownMenuSeparator />}
+          {!managedGlobally && (
+            <DropdownMenuItem
+              disabled={Boolean(presentation.deleteDisabledReason)}
+              onSelect={onDelete}
+              className="flex-col items-start gap-0.5 text-danger-text focus:text-danger-text"
+            >
+              {t("common.delete")}
+              {presentation.deleteDisabledReason && (
+                <span className="text-caption text-fg-3">
+                  {presentation.deleteDisabledReason}
+                </span>
+              )}
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>

@@ -95,7 +95,7 @@ const isRefreshIntervalOption = (
 const normalizeRefreshInterval = (value: number | undefined) =>
   isRefreshIntervalOption(value) ? value : DEFAULT_REFRESH_INTERVAL_MS;
 
-const STATUS_CODE_OPTIONS = [200, 400, 401, 429, 500] as const;
+const STATUS_CODE_OPTIONS = [200, 400, 401, 429, 500, 503] as const;
 
 // 页签只放数据视图；显示和定价设置在「用量设置」抽屉里
 type UsageTab = "logs" | "providers" | "models";
@@ -279,6 +279,7 @@ export function UsageDashboard({
   );
   const [model, setModel] = useState<string | undefined>(undefined);
   const [statusCode, setStatusCode] = useState<number | undefined>(undefined);
+  const [onlyFailures, setOnlyFailures] = useState(false);
 
   // 请求日志显示哪些列在「设置」页签里改，这里只按设置画
   const logColumns = resolveRequestLogColumns(usageDisplay?.requestLogColumns);
@@ -718,7 +719,13 @@ export function UsageDashboard({
   // 三个页签都查（只查当前页签时，没点过的页签一直没有数字）；换筛选时沿用上一份
   // 数据直到新数到达，三个数字原地更新，不会先整体消失再冒出来把页签栏挤得抖一下
   const logCount = useRequestLogs({
-    filters: { appType: scopedAppType, providerName, model, statusCode },
+    filters: {
+      appType: scopedAppType,
+      providerName,
+      model,
+      statusCode,
+      onlyFailures: statusCode == null && onlyFailures ? true : undefined,
+    },
     range,
     page: 0,
     pageSize: logPageSize,
@@ -745,9 +752,11 @@ export function UsageDashboard({
     models: t("usage.tabs.models"),
   };
   const statusLabel =
-    statusCode == null
-      ? t("usage.statusFilter.all")
-      : `${t("usage.statusCode")} ${statusCode}`;
+    statusCode != null
+      ? `${t("usage.statusCode")} ${statusCode}`
+      : onlyFailures
+        ? t("usage.statusFilter.failures", { defaultValue: "只看失敗" })
+        : t("usage.statusFilter.all");
 
   // 工具栏两类入口：左边「筛选」（漏斗图标 + 当前条件，生效时实心底）改的是看哪些行；
   // 竖线右边「显示的列」（纯图标）改的是表怎么显示，是存下来的偏好
@@ -762,16 +771,20 @@ export function UsageDashboard({
               size="compact"
               className={cn(
                 "gap-1.5 pe-1.5 ps-2 text-caption",
-                statusCode == null
+                statusCode == null && !onlyFailures
                   ? "text-fg-2"
                   : "bg-subtle font-medium text-fg-1",
               )}
               aria-label={`${t("usage.statusCode")}: ${statusLabel}`}
             >
               <ListFilter aria-hidden="true" className="h-3.5 w-3.5" />
-              {statusCode == null
-                ? t("usage.statusCode")
-                : `${t("usage.statusCode")} · ${statusCode}`}
+              {statusCode != null
+                ? `${t("usage.statusCode")} · ${statusCode}`
+                : onlyFailures
+                  ? t("usage.statusFilter.failures", {
+                      defaultValue: "只看失敗",
+                    })
+                  : t("usage.statusCode")}
               <ChevronDown aria-hidden="true" className="h-3.5 w-3.5" />
             </Button>
           </DropdownMenuTrigger>
@@ -781,16 +794,32 @@ export function UsageDashboard({
           >
             <DropdownMenuItem
               className={menuItemClass}
-              onSelect={() => setStatusCode(undefined)}
+              onSelect={() => {
+                setStatusCode(undefined);
+                setOnlyFailures(false);
+              }}
             >
-              <MenuCheck checked={statusCode == null} />
+              <MenuCheck checked={statusCode == null && !onlyFailures} />
               {t("usage.statusFilter.all")}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className={menuItemClass}
+              onSelect={() => {
+                setStatusCode(undefined);
+                setOnlyFailures(true);
+              }}
+            >
+              <MenuCheck checked={onlyFailures} />
+              {t("usage.statusFilter.failures", { defaultValue: "只看失敗" })}
             </DropdownMenuItem>
             {STATUS_CODE_OPTIONS.map((code) => (
               <DropdownMenuItem
                 key={code}
                 className={menuItemClass}
-                onSelect={() => setStatusCode(code)}
+                onSelect={() => {
+                  setStatusCode(code);
+                  setOnlyFailures(false);
+                }}
               >
                 <MenuCheck checked={statusCode === code} />
                 <span className="tabular-nums">{code}</span>
@@ -866,6 +895,12 @@ export function UsageDashboard({
             providerName={providerName}
             model={model}
             refreshIntervalMs={0}
+            onDrillDown={(name) => {
+              setProviderName(name);
+              setStatusCode(undefined);
+              setOnlyFailures(false);
+              setTab("logs");
+            }}
           />
         )}
         {tab === "models" && (
@@ -875,6 +910,12 @@ export function UsageDashboard({
             providerName={providerName}
             model={model}
             refreshIntervalMs={0}
+            onDrillDown={(value) => {
+              setModel(value);
+              setStatusCode(undefined);
+              setOnlyFailures(false);
+              setTab("logs");
+            }}
           />
         )}
       </div>
