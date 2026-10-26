@@ -1956,18 +1956,25 @@ pub async fn record_failover_route(
     let Some(target) = provider(state, app, provider_id)? else {
         return Err(format!("供应商不存在: {provider_id}"));
     };
-    commit_state(
-        state,
-        app,
-        &PendingTarget {
-            state: Some(ModeState {
-                proxy_route: Some(provider_id.to_string()),
-                ..mode
-            }),
-            ..PendingTarget::default()
-        },
-    )?;
-    state.proxy_service.set_active_target(app, &target).await;
+    // 自动故障转移也要把新路由绑的账号换进默认登录：否则客户端仍拿旧账号的 OAuth，
+    // 请求会打到失败的旧订阅上。写路由失败时换回。
+    let new_state = ModeState {
+        proxy_route: Some(provider_id.to_string()),
+        ..mode
+    };
+    crate::services::provider::claude_official::with_route_login_switch(app, &target, async {
+        commit_state(
+            state,
+            app,
+            &PendingTarget {
+                state: Some(new_state),
+                ..PendingTarget::default()
+            },
+        )?;
+        state.proxy_service.set_active_target(app, &target).await;
+        Ok::<(), String>(())
+    })
+    .await?;
     Ok(true)
 }
 
