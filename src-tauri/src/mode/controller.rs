@@ -415,7 +415,8 @@ async fn write_proxy(
                 &others,
             );
             let unchanged = !force && live_now.has_contract(&contract.key);
-            let patch = direct_patch(live_now.claude_exclusive_owner().as_ref(), &projection);
+            let mut patch = direct_patch(live_now.claude_exclusive_owner().as_ref(), &projection);
+            crate::services::provider::claude_official::strip_from_patch(&mut patch);
             target.contract = Some(contract);
             claude_direct::run(
                 &state.db,
@@ -531,16 +532,22 @@ fn write_direct(
             let empty = ClaudeProjection::default();
             let projection = usable_direct(app, direct.as_ref())
                 .map(|provider| ClaudeProjection::of(&provider.settings_config));
-            let patch = direct_patch(
+            let mut patch = direct_patch(
                 live_now.claude_exclusive_owner().as_ref(),
                 projection.as_ref().unwrap_or(&empty),
             );
-            claude_direct::run(
-                &state.db,
-                op_name,
-                attached.then_some(&patch),
-                pending_target,
-            )
+            crate::services::provider::claude_official::strip_from_patch(&mut patch);
+            // 退出路由（不是退出 CC Switch 时的分离）回到直连的官方卡：和切换一样把它绑的
+            // 账号换进 Claude Code 的登录（路由期间可能改过这张卡绑的号）
+            let login_target = usable_direct(app, direct.as_ref()).filter(|_| op_name == op::EXIT);
+            crate::services::provider::claude_official::with_login_switch(login_target, || {
+                claude_direct::run(
+                    &state.db,
+                    op_name,
+                    attached.then_some(&patch),
+                    pending_target,
+                )
+            })
             .map_err(err)?;
         }
         AppType::Codex => {
@@ -810,19 +817,23 @@ async fn enter_locked(
     let was_stack = settled_stack(app).is_ok_and(|stack| stack.enabled);
     let stack_on = stack_mode.unwrap_or(was_stack);
     let live_now = LiveNow::of(state, app, &mode)?;
-    let rewritten = write_proxy(
-        state,
+    let rewritten = crate::services::provider::claude_official::with_route_login_switch(
         app,
-        op_name,
         &route,
-        &live_now,
-        ModeState {
-            mode: Some(Mode::Proxy),
-            attached: true,
-            proxy_route: Some(route.id.clone()),
-            contract: None,
-        },
-        next_stack,
+        write_proxy(
+            state,
+            app,
+            op_name,
+            &route,
+            &live_now,
+            ModeState {
+                mode: Some(Mode::Proxy),
+                attached: true,
+                proxy_route: Some(route.id.clone()),
+                contract: None,
+            },
+            next_stack,
+        ),
     )
     .await?;
     log::info!(
@@ -1054,14 +1065,18 @@ pub async fn switch_route_locked(
         false
     } else {
         let live_now = LiveNow::of(state, app, &mode)?;
-        write_proxy(
-            state,
+        crate::services::provider::claude_official::with_route_login_switch(
             app,
-            op::ROUTE,
             target,
-            &live_now,
-            new_state,
-            next_stack,
+            write_proxy(
+                state,
+                app,
+                op::ROUTE,
+                target,
+                &live_now,
+                new_state,
+                next_stack,
+            ),
         )
         .await?
     };
