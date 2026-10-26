@@ -89,12 +89,40 @@ pub async fn with_route_login_switch<R, F>(
 where
     F: std::future::Future<Output = Result<R, String>>,
 {
+    with_route_login_switch_impl(app, target, write, switch_login, settle).await
+}
+
+/// 测试用：记录真正走到登录切换的卡 id。`record_failover_route` 这类呼叫端没有别的
+/// 可观察副作用，用它来锁住「呼叫端有没有用 wrapper」。
+#[cfg(test)]
+pub(crate) static ROUTE_LOGIN_SWITCH_TARGETS: std::sync::Mutex<Vec<String>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// [`with_route_login_switch`] 的可測試核心：登录切换和收尾都从外面传进来，
+/// 好在测试里断言「切换失败不写」「写失败会换回」「写成功会确认」。
+async fn with_route_login_switch_impl<R, F, S, T>(
+    app: &AppType,
+    target: &Provider,
+    write: F,
+    switch: S,
+    settle: T,
+) -> Result<R, String>
+where
+    F: std::future::Future<Output = Result<R, String>>,
+    S: FnOnce(&Provider) -> Result<Option<PreviousLogin>, AppError> + Send + 'static,
+    T: FnOnce(Option<PreviousLogin>, bool) + Send + 'static,
+{
     if app != &AppType::Claude || bound_account(target).is_none() {
         return write.await;
     }
+    #[cfg(test)]
+    ROUTE_LOGIN_SWITCH_TARGETS
+        .lock()
+        .expect("route login switch log")
+        .push(target.id.clone());
     let target = target.clone();
     // 换登录要等 Claude Code 的锁、读钥匙串：别占着 async worker。
-    let previous = tokio::task::spawn_blocking(move || switch_login(&target))
+    let previous = tokio::task::spawn_blocking(move || switch(&target))
         .await
         .map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())?;
@@ -462,5 +490,73 @@ mod tests {
         let result =
             with_route_login_switch(&AppType::Codex, &bound, async { Ok::<_, String>(8) }).await;
         assert_eq!(result.unwrap(), 8);
+    }
+
+    #[tokio::test]
+    async fn route_login_switch_aborts_the_write_when_the_switch_fails() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let bound = official(Some("missing:acc"));
+        let wrote = Arc::new(AtomicBool::new(false));
+        let flag = wrote.clone();
+        let result = with_route_login_switch_impl(
+            &AppType::Claude,
+            &bound,
+            async move {
+                flag.store(true, Ordering::SeqCst);
+                Ok::<_, String>(())
+            },
+            |_| Err(AppError::Message("switch failed".into())),
+            |_, _| panic!("settle must not run when the switch fails"),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(!wrote.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn route_login_switch_reports_a_failed_write_so_the_login_is_restored() {
+        use std::sync::{Arc, Mutex};
+
+        let bound = official(Some("missing:acc"));
+        let settled = Arc::new(Mutex::new(None));
+        let recorded = settled.clone();
+        let result = with_route_login_switch_impl(
+            &AppType::Claude,
+            &bound,
+            async { Err::<(), _>("write failed".to_string()) },
+            |_| Ok(None),
+            move |previous, written| {
+                *recorded.lock().unwrap() = Some((previous.is_some(), written));
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(*settled.lock().unwrap(), Some((false, false)));
+    }
+
+    #[tokio::test]
+    async fn route_login_switch_confirms_a_successful_write() {
+        use std::sync::{Arc, Mutex};
+
+        let bound = official(Some("missing:acc"));
+        let settled = Arc::new(Mutex::new(None));
+        let recorded = settled.clone();
+        let result = with_route_login_switch_impl(
+            &AppType::Claude,
+            &bound,
+            async { Ok::<_, String>(7) },
+            |_| Ok(None),
+            move |previous, written| {
+                *recorded.lock().unwrap() = Some((previous.is_some(), written));
+            },
+        )
+        .await;
+
+        assert_eq!(result.unwrap(), 7);
+        assert_eq!(*settled.lock().unwrap(), Some((false, true)));
     }
 }

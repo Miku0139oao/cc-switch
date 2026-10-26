@@ -3436,6 +3436,62 @@ mod mode_tests {
 
     #[tokio::test]
     #[serial]
+    async fn failover_to_a_bound_official_card_uses_the_login_switch() {
+        use crate::provider::{AuthBinding, AuthBindingSource, ProviderMeta};
+        use crate::services::provider::claude_official::ROUTE_LOGIN_SWITCH_TARGETS;
+
+        let _home = Home::new();
+        seed_settings(USER_SETTINGS);
+        let mut official = Provider::with_id(
+            "bound-official-failover".into(),
+            "Bound Official".into(),
+            json!({ "env": {} }),
+            None,
+        );
+        official.category = Some("official".into());
+        official.meta = Some(ProviderMeta {
+            auth_binding: Some(AuthBinding {
+                source: AuthBindingSource::ManagedAccount,
+                auth_provider: Some("claude_official".into()),
+                account_id: Some("acct".into()),
+            }),
+            ..Default::default()
+        });
+        let state = state_with(
+            AppType::Claude,
+            &[claude("a", "https://a.example", json!({})), official],
+            "a",
+        )
+        .await;
+        enter(&state, &AppType::Claude, false).await.expect("enter");
+
+        let before = ROUTE_LOGIN_SWITCH_TARGETS
+            .lock()
+            .expect("route login switch log")
+            .len();
+        assert!(
+            record_failover_route(&state, &AppType::Claude, "bound-official-failover")
+                .await
+                .expect("record failover")
+        );
+        let targets = ROUTE_LOGIN_SWITCH_TARGETS
+            .lock()
+            .expect("route login switch log");
+        assert!(
+            targets[before..]
+                .iter()
+                .any(|id| id == "bound-official-failover"),
+            "failover must go through the route login switch"
+        );
+        drop(targets);
+        assert_eq!(
+            in_use(&state, &AppType::Claude).as_deref(),
+            Some("bound-official-failover")
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn a_crash_at_any_step_is_finished_or_discarded_on_startup() {
         for (point, expect_proxy) in [("pending", false), ("published:0", true), ("target", true)] {
             let _home = Home::new();
