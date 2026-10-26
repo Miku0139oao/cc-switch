@@ -76,6 +76,34 @@ pub fn with_login_switch<R>(
     result
 }
 
+/// 代理模式下换路由 / 进入代理模式：先把目标卡绑的账号换进 Claude Code 的默认登录，
+/// 再写代理契约；写失败时换回。非 Claude 或目标没绑账号时直接执行写入。
+///
+/// 代理模式的路由请求用的是客户端自己的 OAuth（代理不读账号目录），所以默认登录必须和
+/// 路由 / 聚合成默认那家绑的账号一致，否则请求会打到别的订阅上。
+pub async fn with_route_login_switch<R, F>(
+    app: &AppType,
+    target: &Provider,
+    write: F,
+) -> Result<R, String>
+where
+    F: std::future::Future<Output = Result<R, String>>,
+{
+    if app != &AppType::Claude || bound_account(target).is_none() {
+        return write.await;
+    }
+    let target = target.clone();
+    // 换登录要等 Claude Code 的锁、读钥匙串：别占着 async worker。
+    let previous = tokio::task::spawn_blocking(move || switch_login(&target))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+    let result = write.await;
+    let written = result.is_ok();
+    let _ = tokio::task::spawn_blocking(move || settle(previous, written)).await;
+    result
+}
+
 /// 换掉登录之前默认槽位里是什么：切换的后续步骤失败时用来换回去。
 enum PreviousLogin {
     /// 原来的号和它被收回到的目录
@@ -237,12 +265,15 @@ fn pointer_account(db: &Database) -> Option<String> {
 /// `settings.json` 里那一家的地址、Key（或本地路由）会盖过这个账号的登录。
 pub fn ensure_default_terminal_is_official(db: &Database) -> Result<(), AppError> {
     let app = AppType::Claude;
-    let in_use = if crate::mode::current::is_proxy(&app) {
-        None
+    // 代理模式下默认登录跟的是路由 / 聚合的默认那家（见 `with_route_login_switch`），
+    // 所以要看 InUse；直连模式看 Direct。
+    let purpose = if crate::mode::current::is_proxy(&app) {
+        crate::mode::current::Purpose::InUse
     } else {
-        crate::mode::current::provider_for(db, &app, crate::mode::current::Purpose::Direct)?
-            .and_then(|id| db.get_all_providers(app.as_str()).ok()?.get(&id).cloned())
+        crate::mode::current::Purpose::Direct
     };
+    let in_use = crate::mode::current::provider_for(db, &app, purpose)?
+        .and_then(|id| db.get_all_providers(app.as_str()).ok()?.get(&id).cloned());
     if in_use.as_ref().is_some_and(is_official) {
         return Ok(());
     }
@@ -417,5 +448,19 @@ mod tests {
         // 绑了但本机没有这个账号：打开终端报错，默认登录的卡不设目录
         assert!(terminal_account(&official(Some("missing:acc"))).is_err());
         assert!(terminal_account(&official(None)).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn route_login_switch_is_a_noop_when_unbound_or_not_claude() {
+        let unbound = official(None);
+        let result =
+            with_route_login_switch(&AppType::Claude, &unbound, async { Ok::<_, String>(7) }).await;
+        assert_eq!(result.unwrap(), 7);
+
+        // 绑了账号但应用不是 Claude：代理模式的登录切换只对 Claude Code 有意义。
+        let bound = official(Some("missing:acc"));
+        let result =
+            with_route_login_switch(&AppType::Codex, &bound, async { Ok::<_, String>(8) }).await;
+        assert_eq!(result.unwrap(), 8);
     }
 }

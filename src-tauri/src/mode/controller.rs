@@ -817,19 +817,23 @@ async fn enter_locked(
     let was_stack = settled_stack(app).is_ok_and(|stack| stack.enabled);
     let stack_on = stack_mode.unwrap_or(was_stack);
     let live_now = LiveNow::of(state, app, &mode)?;
-    let rewritten = write_proxy(
-        state,
+    let rewritten = crate::services::provider::claude_official::with_route_login_switch(
         app,
-        op_name,
         &route,
-        &live_now,
-        ModeState {
-            mode: Some(Mode::Proxy),
-            attached: true,
-            proxy_route: Some(route.id.clone()),
-            contract: None,
-        },
-        next_stack,
+        write_proxy(
+            state,
+            app,
+            op_name,
+            &route,
+            &live_now,
+            ModeState {
+                mode: Some(Mode::Proxy),
+                attached: true,
+                proxy_route: Some(route.id.clone()),
+                contract: None,
+            },
+            next_stack,
+        ),
     )
     .await?;
     log::info!(
@@ -1061,14 +1065,18 @@ pub async fn switch_route_locked(
         false
     } else {
         let live_now = LiveNow::of(state, app, &mode)?;
-        write_proxy(
-            state,
+        crate::services::provider::claude_official::with_route_login_switch(
             app,
-            op::ROUTE,
             target,
-            &live_now,
-            new_state,
-            next_stack,
+            write_proxy(
+                state,
+                app,
+                op::ROUTE,
+                target,
+                &live_now,
+                new_state,
+                next_stack,
+            ),
         )
         .await?
     };

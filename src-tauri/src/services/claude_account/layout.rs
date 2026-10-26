@@ -16,6 +16,7 @@ use crate::error::AppError;
 
 const ROOT_DIRNAME: &str = "claude-accounts";
 const CONFIG_DIRNAME: &str = "config";
+#[cfg_attr(not(unix), allow(dead_code))]
 pub const OPENER_FILENAME: &str = ".open-url";
 pub const OPENED_URL_FILENAME: &str = ".opened-url";
 
