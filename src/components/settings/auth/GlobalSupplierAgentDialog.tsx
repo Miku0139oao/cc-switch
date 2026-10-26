@@ -102,7 +102,7 @@ export function GlobalSupplierAgentDialog({
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-[620px]">
+      <DialogContent zIndex="alert" className="max-w-[620px]">
         <DialogTitle>
           {t("authCenter.providers.assignTitle", {
             defaultValue: "分配 {{name}} 給 Agent",

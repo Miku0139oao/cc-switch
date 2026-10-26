@@ -15,6 +15,8 @@
     "saving": "儲存中...",
     "cancel": "取消",
     "undo": "復原",
+    "copied": "已複製",
+    "copyFailed": "無法複製",
     "confirm": "確認",
     "close": "關閉",
     "done": "完成",

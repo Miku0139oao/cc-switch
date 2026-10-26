@@ -15,6 +15,8 @@
     "saving": "Kaydediliyor...",
     "cancel": "İptal",
     "undo": "Geri al",
+    "copied": "Kopyalandı",
+    "copyFailed": "Kopyalanamadı",
     "confirm": "Onayla",
     "close": "Kapat",
     "done": "Tamam",

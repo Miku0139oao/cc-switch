@@ -44,9 +44,11 @@ const stack: ProxyStack = {
       models: [],
     },
   ],
+  // 故意讓兩者不同：診斷要顯示 effectiveFallbacks（實際生效的鏈），
+  // 不是使用者填的 fallbacks。若程式退化成讀 fallbacks，下面的斷言會抓到。
   fallbacks: {
     "ccs-claude-opencode-2--deepseek-v4.1-flash[1M]": [
-      { providerId: "fallback", upstreamModel: "deepseek-flash" },
+      { providerId: "fallback", upstreamModel: "configured-only" },
     ],
   },
   effectiveFallbacks: {
@@ -90,6 +92,7 @@ describe("StackRouteDiagnostics", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Command Code")).toBeInTheDocument();
     expect(screen.getByText("deepseek-flash")).toBeInTheDocument();
+    expect(screen.queryByText("configured-only")).not.toBeInTheDocument();
     expect(screen.getByText(/這份名單目前只保存設定/)).toBeInTheDocument();
     expect(screen.getByText(/harness 顯示名稱/)).toBeInTheDocument();
   });

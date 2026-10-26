@@ -15,6 +15,8 @@
     "saving": "保存中...",
     "cancel": "キャンセル",
     "undo": "元に戻す",
+    "copied": "コピーしました",
+    "copyFailed": "コピーできませんでした",
     "confirm": "確認",
     "close": "閉じる",
     "done": "完了",

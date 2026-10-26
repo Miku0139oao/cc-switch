@@ -227,7 +227,7 @@ export function GlobalProviderImpactDialog({
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-[560px]">
+      <DialogContent zIndex="alert" className="max-w-[560px]">
         <DialogTitle>
           {mode === "delete"
             ? t("globalProviders.impact.deleteTitle", {

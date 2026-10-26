@@ -686,11 +686,7 @@ export function SwitchModePanel({
                   stack={stack}
                   providers={providers}
                 />
-                <StackRoutingEvents
-                  app={app}
-                  providers={providers}
-                  enabled={active === "stack"}
-                />
+                <StackRoutingEvents app={app} providers={providers} />
               </>
             )}
           </>

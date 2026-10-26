@@ -8647,14 +8647,9 @@ impl ProviderService {
                 .as_ref()
                 .map(|child| universal_child_changes(&app, &provider, &child.settings_config))
                 .unwrap_or_default();
-            let in_use = exists
-                && crate::mode::current::provider_for(
-                    &state.db,
-                    &app,
-                    crate::mode::current::Purpose::InUse,
-                )?
-                .as_deref()
-                    == Some(child_id.as_str());
+            // 和刪除／同步的後端守衛同一個集合：直連指標或代理路由指著它就算使用中。
+            // 只看 route 會漏掉「直連 B、路由 A」這種正常狀態，讓 UI 誤判 B 可刪。
+            let in_use = exists && crate::mode::current::is_referenced(&state.db, &app, &child_id)?;
             let in_stack =
                 exists && crate::mode::stack::is_member(&app, &child_id).unwrap_or(false);
             let in_failover_queue = exists

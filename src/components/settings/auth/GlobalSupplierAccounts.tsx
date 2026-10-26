@@ -217,9 +217,12 @@ export function GlobalSupplierAccounts({
   const [assignTarget, setAssignTarget] = useState<UniversalProvider | null>(
     null,
   );
-  const [detailTarget, setDetailTarget] = useState<UniversalProvider | null>(
-    null,
-  );
+  // 只存 id，詳情抽屜永遠讀最新的 providers；否則編輯／分配後抽屜還拿著舊快照，
+  // 再按一次編輯會把剛才的修改蓋回去。
+  const [detailTargetId, setDetailTargetId] = useState<string | null>(null);
+  const detailTarget = detailTargetId
+    ? (providers[detailTargetId] ?? null)
+    : null;
   const [impact, setImpact] = useState<{
     mode: GlobalProviderImpactMode;
     provider: UniversalProvider;
@@ -257,7 +260,7 @@ export function GlobalSupplierAccounts({
     if (!initialDetailId) return;
     const provider = providers[initialDetailId];
     if (!provider) return;
-    setDetailTarget(provider);
+    setDetailTargetId(provider.id);
     onInitialDetailHandled?.();
   }, [initialDetailId, onInitialDetailHandled, providers]);
 
@@ -396,7 +399,7 @@ export function GlobalSupplierAccounts({
     try {
       await universalProvidersApi.delete(provider.id);
       setImpact(null);
-      setDetailTarget(null);
+      setDetailTargetId(null);
       await load();
       toast.success(
         t("authCenter.providers.deleted", {
@@ -648,7 +651,7 @@ export function GlobalSupplierAccounts({
                       defaultValue: "{{name}} 的詳情",
                       name: provider.name,
                     })}
-                    onClick={() => setDetailTarget(provider)}
+                    onClick={() => setDetailTargetId(provider.id)}
                   >
                     <Info className="h-3.5 w-3.5" />
                   </Button>
@@ -815,10 +818,10 @@ export function GlobalSupplierAccounts({
 
       <GlobalProviderDetailSheet
         provider={detailTarget}
-        status={detailTarget ? statuses[detailTarget.id] : undefined}
-        syncing={Boolean(detailTarget && syncingId === detailTarget.id)}
+        status={detailTargetId ? statuses[detailTargetId] : undefined}
+        syncing={Boolean(detailTargetId && syncingId === detailTargetId)}
         saving={saving}
-        onClose={() => setDetailTarget(null)}
+        onClose={() => setDetailTargetId(null)}
         onSync={(provider) => setImpact({ mode: "sync", provider })}
         onAssign={(provider) => setAssignTarget(provider)}
         onEdit={(provider) => openEdit(provider)}
