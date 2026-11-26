@@ -5,7 +5,8 @@
 
 use crate::config::{atomic_write, get_app_config_dir};
 use crate::error::AppError;
-use crate::settings::{effective_backup_retain_count, get_openclaw_override_dir};
+use crate::jsonc_document::parse_round_trip;
+use crate::settings::{effective_backup_retain_count, get_override_dir};
 use chrono::Local;
 use indexmap::IndexMap;
 use json_five::rt::parser::{
@@ -33,7 +34,7 @@ const OPENCLAW_TOOLS_PROFILES: &[&str] = &["minimal", "coding", "messaging", "fu
 /// 默认路径: `~/.openclaw/`
 /// 可通过 settings.openclaw_config_dir 覆盖
 pub fn get_openclaw_dir() -> PathBuf {
-    if let Some(override_dir) = get_openclaw_override_dir() {
+    if let Some(override_dir) = get_override_dir(&crate::app_config::AppType::OpenClaw) {
         return override_dir;
     }
 
@@ -159,16 +160,6 @@ pub struct OpenClawAgentsDefaults {
     pub extra: HashMap<String, Value>,
 }
 
-/// OpenClaw agents 顶层配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct OpenClawAgents {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub defaults: Option<OpenClawAgentsDefaults>,
-    #[serde(flatten)]
-    pub extra: HashMap<String, Value>,
-}
-
 /// OpenClaw env 配置（openclaw.json 的 env 节点）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenClawEnvConfig {
@@ -245,10 +236,11 @@ impl OpenClawConfigDocument {
         let source = original_source
             .clone()
             .unwrap_or_else(|| OPENCLAW_DEFAULT_SOURCE.to_string());
-        let text = rt_from_str(&source).map_err(|e| {
+        // `parse_round_trip` repairs the comment spans json-five 0.3.1 reports;
+        // `rt_from_str` alone drops the `/` that closes every block comment.
+        let text = parse_round_trip(&source).map_err(|e| {
             AppError::Config(format!(
-                "Failed to parse OpenClaw config as round-trip JSON5 document: {}",
-                e.message
+                "Failed to parse OpenClaw config as round-trip JSON5 document: {e}"
             ))
         })?;
 
@@ -322,7 +314,7 @@ impl OpenClawConfigDocument {
     }
 
     fn save(self) -> Result<OpenClawWriteOutcome, AppError> {
-        let _guard = openclaw_write_lock().lock()?;
+        let _guard = crate::sync_utils::lock_file_operation(openclaw_write_lock());
 
         let current_source = if self.path.exists() {
             Some(fs::read_to_string(&self.path).map_err(|e| AppError::io(&self.path, e))?)
@@ -914,14 +906,13 @@ pub fn set_tools_config(tools: &OpenClawToolsConfig) -> Result<OpenClawWriteOutc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync_utils::MutexExt;
     use serial_test::serial;
     use std::sync::{Mutex, OnceLock};
 
     fn test_guard() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
+        LOCK.get_or_init(|| Mutex::new(())).lock_recover()
     }
 
     fn with_test_paths<T>(source: &str, test: impl FnOnce(&Path) -> T) -> T {
@@ -931,19 +922,11 @@ mod tests {
         fs::create_dir_all(&openclaw_dir).unwrap();
         let config_path = openclaw_dir.join("openclaw.json");
         fs::write(&config_path, source).unwrap();
-        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
-        let old_home = std::env::var_os("HOME");
-        std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
-        std::env::set_var("HOME", temp.path());
+        let env = crate::test_support::EnvVars::new()
+            .set("CC_SWITCH_TEST_HOME", temp.path())
+            .set("HOME", temp.path());
         let result = test(&config_path);
-        match old_test_home {
-            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
-            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
-        }
-        match old_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
+        drop(env);
         result
     }
 
@@ -1084,6 +1067,53 @@ mod tests {
 
             let written = fs::read_to_string(get_openclaw_config_path()).unwrap();
             assert!(written.contains("\"providers\": {}"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn provider_write_keeps_block_comments_closed() {
+        let source = r#"{
+  /* my gateway */
+  gateway: { port: 18789 /* default */ },
+  /**
+   * Model providers.
+   */
+  models: {
+    mode: 'merge',
+    providers: {},
+  },
+}
+"#;
+
+        with_test_paths(source, |_| {
+            set_provider("demo", json!({ "api": "openai-completions" })).unwrap();
+
+            let written = fs::read_to_string(get_openclaw_config_path()).unwrap();
+            assert!(written.contains("  /* my gateway */\n"));
+            assert!(written.contains("{ port: 18789 /* default */ },"));
+            assert!(written.contains("  /**\n   * Model providers.\n   */\n"));
+
+            let config = read_openclaw_config().unwrap();
+            assert_eq!(config["gateway"]["port"], json!(18789));
+            assert_eq!(
+                config["models"]["providers"]["demo"]["api"],
+                json!("openai-completions")
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn provider_write_accepts_non_ascii_comment_at_end_of_file() {
+        let source = "{\n  models: {\n    mode: 'merge',\n    providers: {},\n  },\n}\n// 手动维护";
+
+        with_test_paths(source, |_| {
+            set_provider("demo", json!({ "api": "openai-completions" })).unwrap();
+
+            let written = fs::read_to_string(get_openclaw_config_path()).unwrap();
+            assert!(written.ends_with("}\n// 手动维护"));
+            assert!(read_openclaw_config().is_ok());
         });
     }
 }

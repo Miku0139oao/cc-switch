@@ -1,5 +1,5 @@
 const SELECTABLE_SELECTOR =
-  'input, textarea, [contenteditable="true"], [contenteditable=""], pre, code, .selectable';
+  'input, textarea, select, .cm-editor, [contenteditable="true"], [contenteditable=""], pre, code, .selectable';
 
 /**
  * Suppress WebView navigation and writing-tools context menus on app chrome.

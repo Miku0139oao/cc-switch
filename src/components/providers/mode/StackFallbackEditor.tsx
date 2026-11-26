@@ -364,7 +364,7 @@ export function StackFallbackEditor({
                           type="button"
                           variant="quiet"
                           size="icon-compact"
-                          aria-label={t("common.remove")}
+                          aria-label={t("common.delete")}
                           onClick={() =>
                             setDraft((current) =>
                               current.filter((_, item) => item !== index),

@@ -84,30 +84,6 @@ export function useResetCircuitBreaker() {
   });
 }
 
-/**
- * 获取熔断器配置
- */
-export function useCircuitBreakerConfig() {
-  return useQuery({
-    queryKey: ["circuitBreakerConfig"],
-    queryFn: () => failoverApi.getCircuitBreakerConfig(),
-  });
-}
-
-/**
- * 更新熔断器配置
- */
-export function useUpdateCircuitBreakerConfig() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: failoverApi.updateCircuitBreakerConfig,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["circuitBreakerConfig"] });
-    },
-  });
-}
-
 // ========== 故障转移队列 Hooks（新） ==========
 
 /**
@@ -118,17 +94,6 @@ export function useFailoverQueue(appType: string, enabled = true) {
     queryKey: ["failoverQueue", appType],
     queryFn: () => failoverApi.getFailoverQueue(appType),
     enabled: enabled && !!appType,
-  });
-}
-
-/**
- * 获取可添加到队列的供应商
- */
-export function useAvailableProvidersForFailover(appType: string) {
-  return useQuery({
-    queryKey: ["availableProvidersForFailover", appType],
-    queryFn: () => failoverApi.getAvailableProvidersForFailover(appType),
-    enabled: !!appType,
   });
 }
 

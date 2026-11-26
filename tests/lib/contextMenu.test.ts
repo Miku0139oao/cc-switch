@@ -36,7 +36,14 @@ describe("context menu guard", () => {
       <code id="code"></code>
       <div class="selectable" id="selectable"><span id="child">copy</span></div>
     `;
-    for (const id of ["input", "textarea", "editable", "pre", "code", "child"]) {
+    for (const id of [
+      "input",
+      "textarea",
+      "editable",
+      "pre",
+      "code",
+      "child",
+    ]) {
       expect(dispatchContextMenu(document.getElementById(id)!)).toBe(false);
     }
   });

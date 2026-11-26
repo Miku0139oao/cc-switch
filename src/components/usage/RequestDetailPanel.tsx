@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Copy } from "lucide-react";
 import type { AppId } from "@/lib/api";
 import { providersQueryOptions } from "@/lib/query";
 import { useStackFallbackEventsForRequest } from "@/lib/query/proxy";
 import { Button } from "@/components/ui/button";
+import { HoverTip } from "@/components/ui/hover-tip";
 import { Notice } from "@/components/ui/notice";
 import {
   Sheet,
@@ -15,11 +16,9 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { useRequestDetail } from "@/lib/query/usage";
-import {
-  getFreshInputTokens,
-  isUnpricedUsage,
-  type RequestLog,
-} from "@/types/usage";
+import { copyText } from "@/lib/clipboard";
+import { toast } from "@/lib/toast";
+import { isUnpricedUsage, type RequestLog } from "@/types/usage";
 import { cn } from "@/lib/utils";
 import { useMoneyFormat } from "@/hooks/useMoneyFormat";
 import { extractErrorMessage } from "@/utils/errorUtils";
@@ -31,6 +30,7 @@ import {
   formatOutputTokensPerSecond,
   getLocaleFromLanguage,
   getResolvedLang,
+  isSpeedBurstExcluded,
   parseFiniteNumber,
 } from "./format";
 import { appDisplayName } from "./RequestLogTable";
@@ -50,6 +50,34 @@ interface DetailRow {
   strong?: boolean;
   muted?: boolean;
   title?: string;
+  /** 行尾给一个复制按钮：显示被截断时也复制完整原文 */
+  copy?: { text: string; label: string; copied: string };
+}
+
+function CopyRowButton({ copy }: { copy: NonNullable<DetailRow["copy"]> }) {
+  const { t } = useTranslation();
+  const handleCopy = async () => {
+    try {
+      await copyText(copy.text);
+      toast.success(copy.copied);
+    } catch (error) {
+      toast.error(t("prompts.copyFailed"), { description: String(error) });
+    }
+  };
+  return (
+    <HoverTip content={copy.label}>
+      <Button
+        type="button"
+        variant="quiet"
+        size="icon-compact"
+        className="h-6 w-6 shrink-0"
+        aria-label={copy.label}
+        onClick={() => void handleCopy()}
+      >
+        <Copy className="h-3.5 w-3.5" strokeWidth={1.5} />
+      </Button>
+    </HoverTip>
+  );
 }
 
 function DetailSection({ title, rows }: { title: string; rows: DetailRow[] }) {
@@ -82,6 +110,7 @@ function DetailSection({ title, rows }: { title: string; rows: DetailRow[] }) {
             >
               {row.value}
             </dd>
+            {row.copy && <CopyRowButton copy={row.copy} />}
           </div>
         ))}
       </dl>
@@ -94,7 +123,7 @@ function useDetailSections(request: RequestLog) {
   const { money, moneyTitle } = useMoneyFormat();
   const usd = (value: string) => money(value, 4);
   const locale = getLocaleFromLanguage(getResolvedLang(i18n));
-  const freshInput = getFreshInputTokens(request);
+  const freshInput = request.freshInputTokens;
   const isCacheInclusive = request.inputTokens !== freshInput;
   const unpriced = isUnpricedUsage(request);
   const multiplier = parseFiniteNumber(request.costMultiplier);
@@ -160,6 +189,11 @@ function useDetailSections(request: RequestLog) {
     label: t("usage.requestId"),
     value: request.requestId,
     mono: true,
+    copy: {
+      text: request.requestId,
+      label: t("usage.detail.copyRequestId"),
+      copied: t("usage.detail.requestIdCopied"),
+    },
   });
 
   const tokens: DetailRow[] = [
@@ -295,12 +329,19 @@ function useDetailSections(request: RequestLog) {
                 value: t("usage.detail.speedTooFew"),
                 muted: true,
               }
-            : {
-                key: "speed",
-                label: t("usage.speed"),
-                value: "—",
-                muted: true,
-              };
+            : isSpeedBurstExcluded(request)
+              ? {
+                  key: "speed",
+                  label: t("usage.speed"),
+                  value: t("usage.detail.speedBurst"),
+                  muted: true,
+                }
+              : {
+                  key: "speed",
+                  label: t("usage.speed"),
+                  value: "—",
+                  muted: true,
+                };
     performance = [speedRow];
     if (firstToken != null) {
       performance.push({

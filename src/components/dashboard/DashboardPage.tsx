@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { useQueries, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   CircleAlert,
@@ -16,16 +16,12 @@ import { toast } from "@/lib/toast";
 import type { AppId } from "@/lib/api";
 import type { Provider } from "@/types";
 import type { AppMode, ProxyStackFallbacks } from "@/types/proxy";
-import {
-  isModeAppId,
-  isProxyAppId,
-  isStackAppId,
-  orderAppIds,
-} from "@/config/appConfig";
+import { orderAppIds } from "@/config/appConfig";
 import { providersQueryOptions, useSettingsQuery } from "@/lib/query";
 import { proxyKeys, useProxyStatusQuery } from "@/lib/query/proxy";
 import { failoverApi } from "@/lib/api/failover";
 import { proxyApi } from "@/lib/api/proxy";
+import { appHas } from "@/config/appSpecs";
 import { AppPageHeader } from "@/components/shell/AppPageHeader";
 import { APP_DISPLAY_NAME, AppGlyph } from "@/components/shell/AppGlyph";
 import UsageFooter from "@/components/UsageFooter";
@@ -99,7 +95,6 @@ function DashboardQuota({
         providerId={provider.id}
         appId={app}
         usageEnabled
-        isCurrent
         inline
       />
     );
@@ -126,19 +121,25 @@ export function DashboardPage({
     [settings?.appOrder, settings?.visibleApps],
   );
 
-  const modeQueries = useQueries({
-    queries: apps.map((app) => ({
-      queryKey: ["providers", app, "mode"] as const,
-      queryFn: () => proxyApi.getAppMode(app),
-      enabled: isModeAppId(app),
-      staleTime: 10_000,
-    })),
+  const { data: snapshot } = useQuery({
+    queryKey: ["dashboardSnapshot"],
+    queryFn: () => proxyApi.getDashboardSnapshot(),
+    staleTime: 10_000,
   });
+  const { data: capabilities } = useQuery({
+    queryKey: ["appCapabilities"],
+    queryFn: () => proxyApi.getAppCapabilities(),
+    staleTime: Infinity,
+  });
+  const capability = (app: AppId) =>
+    capabilities?.find((entry) => entry.appType === app);
+  const modeFor = (app: AppId) =>
+    snapshot?.agents.find((agent) => agent.appType === app);
   const stackQueries = useQueries({
     queries: apps.map((app) => ({
       queryKey: ["providers", app, "stack"] as const,
       queryFn: () => proxyApi.getProxyStack(app),
-      enabled: isStackAppId(app),
+      enabled: capability(app)?.stack ?? appHas(app, "stack"),
       staleTime: 10_000,
     })),
   });
@@ -146,7 +147,7 @@ export function DashboardPage({
     queries: apps.map((app) => ({
       queryKey: ["failoverQueue", app] as const,
       queryFn: () => failoverApi.getFailoverQueue(app),
-      enabled: isProxyAppId(app),
+      enabled: capability(app)?.failover ?? appHas(app, "localProxy"),
       staleTime: 10_000,
     })),
   });
@@ -154,7 +155,7 @@ export function DashboardPage({
     queries: apps.map((app) => ({
       queryKey: ["autoFailoverEnabled", app] as const,
       queryFn: () => failoverApi.getAutoFailoverEnabled(app),
-      enabled: isProxyAppId(app),
+      enabled: capability(app)?.failover ?? appHas(app, "localProxy"),
       staleTime: 10_000,
     })),
   });
@@ -165,8 +166,8 @@ export function DashboardPage({
     })),
   });
 
-  const activeProviderIds = apps.map((_app, index) => {
-    const mode = modeQueries[index]?.data;
+  const activeProviderIds = apps.map((app, index) => {
+    const mode = modeFor(app);
     const providers = providerResults[index]?.data;
     if (mode?.mode && mode.mode !== "direct") {
       return mode.routeProviderId ?? providers?.currentProviderId ?? null;
@@ -180,7 +181,7 @@ export function DashboardPage({
         failoverApi.getProviderHealth(activeProviderIds[index] as string, app),
       enabled:
         status?.running === true &&
-        isModeAppId(app) &&
+        (capability(app)?.route ?? appHas(app, "routeMode")) &&
         Boolean(activeProviderIds[index]),
       staleTime: 10_000,
     })),
@@ -199,6 +200,7 @@ export function DashboardPage({
 
   const refreshAll = async () => {
     await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["dashboardSnapshot"] }),
       queryClient.invalidateQueries({ queryKey: ["usage"] }),
       queryClient.invalidateQueries({ queryKey: ["providers"] }),
       queryClient.invalidateQueries({ queryKey: proxyKeys.status }),
@@ -297,7 +299,7 @@ export function DashboardPage({
                 const providerData = providerResults[index]?.data;
                 const provider =
                   providerData?.providers[activeProviderIds[index] ?? ""];
-                const mode = modeQueries[index]?.data;
+                const mode = modeFor(app);
                 const effectiveMode: AppMode =
                   mode?.mode === "route" || mode?.mode === "stack"
                     ? mode.mode
