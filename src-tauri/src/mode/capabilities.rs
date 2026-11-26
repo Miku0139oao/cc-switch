@@ -26,22 +26,7 @@ pub enum ModelCatalogCapability {
 }
 
 pub fn for_app(app: &AppType) -> AppCapabilities {
-    let route = matches!(
-        app,
-        AppType::Claude
-            | AppType::ClaudeDesktop
-            | AppType::Codex
-            | AppType::Gemini
-            | AppType::GrokBuild
-    );
-    let stack = matches!(
-        app,
-        AppType::Claude | AppType::Codex | AppType::ClaudeDesktop
-    );
-    let failover = matches!(
-        app,
-        AppType::Claude | AppType::Codex | AppType::Gemini | AppType::GrokBuild
-    );
+    let spec = app.spec();
     let model_catalog = match app {
         AppType::Claude | AppType::Codex | AppType::ClaudeDesktop => {
             ModelCatalogCapability::Dynamic
@@ -52,9 +37,9 @@ pub fn for_app(app: &AppType) -> AppCapabilities {
     AppCapabilities {
         app_type: app.as_str().to_string(),
         direct: true,
-        route,
-        stack,
-        failover,
+        route: spec.route_mode,
+        stack: spec.stack,
+        failover: spec.local_proxy,
         launch_scoped: matches!(app, AppType::Agy),
         model_catalog,
     }

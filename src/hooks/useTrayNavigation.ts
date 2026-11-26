@@ -2,8 +2,8 @@ import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppId } from "@/lib/api/types";
-import { APP_IDS } from "@/config/appConfig";
 import { SETTINGS_SECTIONS, type SettingsSection } from "@/lib/navigation";
+import { APP_IDS } from "@/config/appSpecs";
 
 /** 托盘让主界面去的地方（后端 `tray::TrayNavigation`）。 */
 export interface TrayNavigation {
@@ -12,6 +12,8 @@ export interface TrayNavigation {
   /** `needsRoute`：弹「需要路由」对话框；`add`：开始添加供应商 */
   intent?: "needsRoute" | "add";
   providerId?: string;
+  /** 全局页面：`auth` 是授权中心（托盘的 Antigravity 账号区「管理账号…」） */
+  page?: "auth";
 }
 
 interface RawTrayNavigation {
@@ -19,12 +21,14 @@ interface RawTrayNavigation {
   section?: string;
   intent?: string;
   providerId?: string;
+  page?: string;
 }
 
 export function parseTrayNavigation(
   raw: RawTrayNavigation | null | undefined,
 ): TrayNavigation | null {
   if (!raw) return null;
+  if (raw.page === "auth") return { page: "auth" };
   const section = SETTINGS_SECTIONS.find((s) => s === raw.section);
   if (section) return { section };
   const app = APP_IDS.find((id) => id === raw.app);

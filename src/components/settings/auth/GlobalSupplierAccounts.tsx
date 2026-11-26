@@ -25,7 +25,7 @@ import { extractErrorMessage } from "@/utils/errorUtils";
 import {
   extractCodexBaseUrl,
   extractCodexExperimentalBearerToken,
-} from "@/utils/providerConfigUtils";
+} from "@/utils/codexConfigUtils";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -227,6 +227,27 @@ export function GlobalSupplierAccounts({
     mode: GlobalProviderImpactMode;
     provider: UniversalProvider;
   } | null>(null);
+
+  useEffect(() => {
+    if (!detailTargetId) return;
+    let current = true;
+    void universalProvidersApi
+      .getStatus(detailTargetId)
+      .then((status) => {
+        if (current && status) {
+          setStatuses((previous) => ({ ...previous, [status.id]: status }));
+        }
+      })
+      .catch((error) => {
+        if (current)
+          toast.error(
+            extractErrorMessage(error) || t("authCenter.providers.loadFailed"),
+          );
+      });
+    return () => {
+      current = false;
+    };
+  }, [detailTargetId, t]);
 
   const load = useCallback(async () => {
     setLoading(true);

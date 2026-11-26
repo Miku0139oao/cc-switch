@@ -1,13 +1,21 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ClaudeDesktopProviderForm } from "@/components/providers/forms/ClaudeDesktopProviderForm";
+import type { ProviderMeta } from "@/types";
 import { createTestQueryClient } from "../utils/testQueryClient";
 
 const authState = vi.hoisted(() => ({
   codexReauthRequired: false,
+  copilotAuthenticated: false,
 }));
 const toastMocks = vi.hoisted(() => ({
   error: vi.fn(),
@@ -37,8 +45,16 @@ vi.mock("@/components/providers/forms/hooks", async (importOriginal) => {
   return {
     ...actual,
     useCopilotAuth: () => ({
-      isAuthenticated: false,
-      accounts: [],
+      isAuthenticated: authState.copilotAuthenticated,
+      accounts: authState.copilotAuthenticated
+        ? [
+            {
+              id: "copilot-default",
+              login: "copilot-user",
+              is_default: true,
+            },
+          ]
+        : [],
     }),
     useCodexOauth: () => ({
       isAuthenticated: true,
@@ -98,6 +114,7 @@ function renderForm(
 describe("ClaudeDesktopProviderForm", () => {
   beforeEach(() => {
     authState.codexReauthRequired = false;
+    authState.copilotAuthenticated = false;
     toastMocks.error.mockReset();
     modelFetchMocks.fetchCodexOauthModels.mockReset();
   });
@@ -194,6 +211,175 @@ describe("ClaudeDesktopProviderForm", () => {
       }
     },
   );
+
+  it.each(["codex_oauth", "xai_oauth"])(
+    "%s 忽略 Copilot 地址并保留自身协议与认证方式",
+    (providerType) => {
+      renderForm({
+        name: "Managed OAuth Provider",
+        settingsConfig: {
+          env: { ANTHROPIC_BASE_URL: "https://api.githubcopilot.com" },
+        },
+        meta: {
+          providerType,
+          claudeDesktopMode: "proxy",
+          apiFormat: "openai_responses",
+        },
+      });
+
+      expect(
+        screen.queryByText("copilot.automaticFormat"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("copilot.automaticFormatHint"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("copilot-auth-section"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByTestId(
+          providerType === "codex_oauth"
+            ? "codex-oauth-section"
+            : "xai-oauth-section",
+        ),
+      ).toBeVisible();
+      if (providerType === "codex_oauth") {
+        expect(
+          screen
+            .getAllByRole("combobox")
+            .find((control) =>
+              control.textContent?.includes(
+                "OpenAI Responses API (需开启路由)",
+              ),
+            ),
+        ).toBeEnabled();
+      }
+    },
+  );
+
+  it.each([
+    "anthropic",
+    "openai_chat",
+    "openai_responses",
+    "gemini_native",
+  ] as const)("手动配置 Copilot 地址时禁用旧格式 %s 的手选", (apiFormat) => {
+    renderForm({
+      name: "Custom Copilot",
+      settingsConfig: {
+        env: {
+          ANTHROPIC_BASE_URL: "https://api.githubcopilot.com",
+          ANTHROPIC_AUTH_TOKEN: "test-token",
+        },
+      },
+      meta: { claudeDesktopMode: "proxy", apiFormat },
+    });
+
+    expect(
+      screen.getByText("copilot.automaticFormat").closest("button"),
+    ).toBeDisabled();
+    expect(screen.getByText("copilot.automaticFormatHint")).toBeVisible();
+    expect(screen.getByLabelText("API Key")).toBeVisible();
+    expect(
+      screen.queryByTestId("copilot-auth-section"),
+    ).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [
+      "https://api.githubcopilot.com",
+      "https://api.githubcopilot.com",
+      "anthropic",
+    ],
+    ["https://api.example.com", "https://api.githubcopilot.com", "anthropic"],
+    [
+      "https://api.githubcopilot.com",
+      "https://api.example.com",
+      "gemini_native",
+    ],
+    ["https://api.example.com", "https://api.example.com", "gemini_native"],
+  ])(
+    "遗留 Gemini 格式从 %s 编辑为 %s 后保存为 %s",
+    async (initialUrl, finalUrl, expectedFormat) => {
+      const { onSubmit } = renderForm({
+        name: "Legacy Gemini Provider",
+        settingsConfig: {
+          api_format: "gemini_native",
+          env: {
+            ANTHROPIC_BASE_URL: initialUrl,
+            ANTHROPIC_AUTH_TOKEN: "test-token",
+          },
+        },
+        meta: {
+          claudeDesktopMode: "proxy",
+          apiFormat: "gemini_native",
+          claudeDesktopModelRoutes: {
+            "claude-sonnet-5": { model: "upstream-model" },
+          },
+        },
+      });
+
+      fireEvent.change(screen.getByLabelText("providerForm.apiEndpoint"), {
+        target: { value: finalUrl },
+      });
+      if (finalUrl.includes("githubcopilot.com")) {
+        expect(
+          screen.getByText("copilot.automaticFormat").closest("button"),
+        ).toBeDisabled();
+      }
+      fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+      const values = onSubmit.mock.calls[0][0];
+      expect(values.meta.apiFormat).toBe(expectedFormat);
+      expect(values.meta.providerType).toBeUndefined();
+      expect(values.meta.authBinding).toBeUndefined();
+      expect(JSON.parse(values.settingsConfig).env).toMatchObject({
+        ANTHROPIC_BASE_URL: finalUrl,
+        ANTHROPIC_AUTH_TOKEN: "test-token",
+      });
+    },
+  );
+
+  it("修改自定义上游地址时同步切换自动格式并保留原格式", async () => {
+    renderForm({
+      name: "Custom Provider",
+      settingsConfig: {
+        env: { ANTHROPIC_BASE_URL: "https://api.example.com" },
+      },
+      meta: { claudeDesktopMode: "proxy", apiFormat: "openai_chat" },
+    });
+
+    const formatControl = screen
+      .getAllByRole("combobox")
+      .find((control) =>
+        control.textContent?.includes("OpenAI Chat Completions (需开启路由)"),
+      );
+    expect(formatControl).toBeEnabled();
+    expect(
+      screen.queryByText("copilot.automaticFormatHint"),
+    ).not.toBeInTheDocument();
+
+    const endpoint = screen.getByLabelText("providerForm.apiEndpoint");
+    fireEvent.change(endpoint, {
+      target: { value: "https://api.business.githubcopilot.com" },
+    });
+    expect(formatControl).toBeDisabled();
+    await waitFor(() =>
+      expect(formatControl).toHaveTextContent("copilot.automaticFormat"),
+    );
+    expect(screen.getByText("copilot.automaticFormatHint")).toBeVisible();
+
+    fireEvent.change(endpoint, {
+      target: { value: "https://api.example.com" },
+    });
+    expect(formatControl).toBeEnabled();
+    expect(formatControl).toHaveTextContent(
+      "OpenAI Chat Completions (需开启路由)",
+    );
+    expect(
+      screen.queryByText("copilot.automaticFormatHint"),
+    ).not.toBeInTheDocument();
+  });
 
   it("新建自定义供应商默认使用直连并显示模型列表", () => {
     renderForm(undefined);
@@ -436,6 +622,55 @@ describe("ClaudeDesktopProviderForm", () => {
     );
   });
 
+  it("编辑映射卡只改实际请求模型时，自动填出的菜单显示名跟着更新（#9203）", async () => {
+    const onSubmit = vi.fn();
+    renderForm(
+      {
+        name: "Proxy Provider",
+        settingsConfig: {
+          env: {
+            ANTHROPIC_BASE_URL: "https://api.example.com",
+            ANTHROPIC_AUTH_TOKEN: "sk-test",
+          },
+        },
+        meta: {
+          claudeDesktopMode: "proxy",
+          claudeDesktopModelRoutes: {
+            "claude-sonnet-5": {
+              model: "old-model",
+              labelOverride: "old-model",
+            },
+            "claude-opus-5": {
+              model: "old-model",
+              labelOverride: "My Opus",
+            },
+          },
+        },
+      },
+      onSubmit,
+    );
+
+    // 前三档（Sonnet / Opus / Fable）的实际请求模型占位都是 deepseek-v4-pro。
+    const [sonnetModel, opusModel] =
+      screen.getAllByPlaceholderText("deepseek-v4-pro");
+    fireEvent.change(sonnetModel, { target: { value: "new-model" } });
+    fireEvent.change(opusModel, { target: { value: "new-opus" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    const routes = onSubmit.mock.calls[0][0].meta.claudeDesktopModelRoutes;
+    // 显示名原本就是自动回落出来的模型名：跟着换成新模型。
+    expect(routes["claude-sonnet-5"]).toMatchObject({
+      model: "new-model",
+      labelOverride: "new-model",
+    });
+    // 用户自己起的显示名保持不动。
+    expect(routes["claude-opus-5"]).toMatchObject({
+      model: "new-opus",
+      labelOverride: "My Opus",
+    });
+  });
+
   it("回填空档时继承 Sonnet 的 1M 声明", async () => {
     const onSubmit = vi.fn();
     renderForm(
@@ -571,5 +806,128 @@ describe("ClaudeDesktopProviderForm", () => {
       ),
     );
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("a Copilot route can be set to the virtual model while other roles stay concrete, saving without strategy meta", async () => {
+    authState.copilotAuthenticated = true;
+    const onSubmit = vi.fn();
+    renderForm(
+      {
+        name: "Copilot Provider",
+        category: "third_party",
+        settingsConfig: {
+          env: {
+            ANTHROPIC_BASE_URL: "https://api.individual.githubcopilot.com",
+            ANTHROPIC_AUTH_TOKEN: "copilot-placeholder",
+          },
+        },
+        meta: {
+          providerType: "github_copilot",
+          claudeDesktopMode: "proxy",
+          claudeDesktopModelRoutes: {
+            "claude-sonnet-5": { model: "gpt-4o" },
+          },
+        },
+      },
+      onSubmit,
+    );
+
+    expect(screen.getByText("模型角色")).toBeVisible();
+    const modelInputs = screen.getAllByPlaceholderText(/deepseek-v4/);
+    fireEvent.change(modelInputs[0], {
+      target: { value: "copilot-fusion-auto" },
+    });
+    fireEvent.change(modelInputs[1], { target: { value: "gpt-4o" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+
+    const saved = onSubmit.mock.calls[0][0];
+    expect(
+      Object.keys((saved.meta ?? {}) as Record<string, unknown>),
+    ).not.toContain("copilotModelSelection");
+    expect(
+      saved.meta?.claudeDesktopModelRoutes?.["claude-sonnet-5"]?.model,
+    ).toBe("copilot-fusion-auto");
+    expect(saved.meta?.claudeDesktopModelRoutes?.["claude-opus-5"]?.model).toBe(
+      "gpt-4o",
+    );
+  });
+
+  it("does not list Auto until the Copilot account catalogue advertises it", async () => {
+    authState.copilotAuthenticated = true;
+    renderForm({
+      name: "Copilot Provider",
+      category: "third_party",
+      settingsConfig: {
+        env: {
+          ANTHROPIC_BASE_URL: "https://api.individual.githubcopilot.com",
+          ANTHROPIC_AUTH_TOKEN: "copilot-placeholder",
+        },
+      },
+      meta: {
+        providerType: "github_copilot",
+        claudeDesktopMode: "proxy",
+        claudeDesktopModelRoutes: {
+          "claude-sonnet-5": { model: "gpt-4o" },
+        },
+      },
+    });
+
+    const modelInputs = screen.getAllByPlaceholderText(/deepseek-v4/);
+    expect(
+      within(modelInputs[0].parentElement as HTMLElement).queryByRole(
+        "button",
+        {
+          name: "Select model",
+        },
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it("legacy fusion strategy meta is inert: the route table shows the saved virtual rows and saving keeps them", async () => {
+    authState.copilotAuthenticated = true;
+    const onSubmit = vi.fn();
+    renderForm(
+      {
+        name: "Copilot Provider",
+        category: "third_party",
+        settingsConfig: {
+          env: {
+            ANTHROPIC_BASE_URL: "https://api.individual.githubcopilot.com",
+            ANTHROPIC_AUTH_TOKEN: "copilot-placeholder",
+          },
+        },
+        meta: {
+          providerType: "github_copilot",
+          copilotModelSelection: "fusion",
+          claudeDesktopMode: "proxy",
+          claudeDesktopModelRoutes: {
+            "claude-sonnet-5": { model: "copilot-fusion-auto" },
+            "claude-opus-5": { model: "copilot-fusion-auto" },
+          },
+          copilotSavedFixedDesktopRoutes: {
+            "claude-sonnet-5": { model: "persisted-fixed-sonnet" },
+          },
+        } as unknown as ProviderMeta,
+      },
+      onSubmit,
+    );
+
+    // 旧版策略选择器已不存在，路由表直接可见，虚拟行照常显示。
+    expect(screen.queryByRole("combobox", { name: "模型选择策略" })).toBeNull();
+    expect(screen.getByText("模型角色")).toBeVisible();
+    expect(screen.getAllByDisplayValue("copilot-fusion-auto").length).toBe(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+
+    const saved = onSubmit.mock.calls[0][0];
+    expect(
+      saved.meta?.claudeDesktopModelRoutes?.["claude-sonnet-5"]?.model,
+    ).toBe("copilot-fusion-auto");
+    expect(saved.meta?.claudeDesktopModelRoutes?.["claude-opus-5"]?.model).toBe(
+      "copilot-fusion-auto",
+    );
   });
 });

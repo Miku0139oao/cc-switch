@@ -73,7 +73,7 @@ pub fn set_route(
     }
 
     let provider = db
-        .get_provider_by_id(provider_id, AppType::Codex.as_str())?
+        .get_provider_by_id(provider_id, &AppType::Codex)?
         .ok_or_else(|| AppError::InvalidInput("Codex provider no longer exists".to_string()))?;
     if !stack::codex_models(&provider)
         .iter()
@@ -115,7 +115,9 @@ pub fn clear_route(store: &DeviceStore, session_id: &str) -> Result<(), AppError
 }
 
 pub fn model_targets(db: &Database) -> Result<Vec<CodexSessionModelTarget>, AppError> {
-    let providers = db.get_all_providers(AppType::Codex.as_str())?;
+    let providers = db
+        .get_provider_rows(&AppType::Codex)?
+        .into_readable("session model routes");
     let mut targets = Vec::new();
     for provider in providers.values() {
         let official = provider.category.as_deref() == Some("official")
@@ -154,7 +156,7 @@ pub fn resolve_request(
     let Some(route) = routes(store)?.get(&session_id).cloned() else {
         return Ok(None);
     };
-    let Some(provider) = db.get_provider_by_id(&route.provider_id, AppType::Codex.as_str())? else {
+    let Some(provider) = db.get_provider_by_id(&route.provider_id, &AppType::Codex)? else {
         log::warn!(
             "[Codex] session {session_id} is pinned to missing provider {}; using global routing",
             route.provider_id
@@ -205,9 +207,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = DeviceStore::at(dir.path());
         let db = Database::memory().unwrap();
-        db.save_provider("codex", &provider("alpha", "Alpha", "model-a"))
+        db.save_provider(&AppType::Codex, &provider("alpha", "Alpha", "model-a"))
             .unwrap();
-        db.save_provider("codex", &provider("beta", "Beta", "model-b"))
+        db.save_provider(&AppType::Codex, &provider("beta", "Beta", "model-b"))
             .unwrap();
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(

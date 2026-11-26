@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexFormFields } from "@/components/providers/forms/CodexFormFields";
 import { Form } from "@/components/ui/form";
 import type { FetchedModel } from "@/lib/api/model-fetch";
+import type { CodexChatReasoning } from "@/types";
 
 const modelFetchApiMock = vi.hoisted(() => ({
   fetchModelsForConfig: vi.fn(),
@@ -44,8 +45,8 @@ const HEADERS_PLACEHOLDER = /X-Provider/;
 // while Base URL / API Key stay untouched.
 const INITIAL_HEADERS_OVERRIDE = '{"X-Tenant": "tenant-1"}';
 
-function renderCodexForm() {
-  const baseProps: CodexFormFieldsProps = {
+function baseCodexProps(): CodexFormFieldsProps {
+  return {
     codexApiKey: "sk-test",
     onApiKeyChange: vi.fn(),
     category: "third_party",
@@ -80,6 +81,10 @@ function renderCodexForm() {
     onLocalProxyBodyOverrideChange: vi.fn(),
     shouldShowSpeedTest: true,
   };
+}
+
+function renderCodexForm() {
+  const baseProps = baseCodexProps();
 
   function Harness() {
     const [headersOverride, setHeadersOverride] = useState(
@@ -92,6 +97,35 @@ function renderCodexForm() {
           {...baseProps}
           localProxyHeadersOverride={headersOverride}
           onLocalProxyHeadersOverrideChange={setHeadersOverride}
+        />
+      </FormShell>
+    );
+  }
+
+  return render(<Harness />);
+}
+
+function renderReasoningForm() {
+  function Harness() {
+    const [reasoning, setReasoning] = useState<CodexChatReasoning>({
+      supportsThinking: true,
+      supportsEffort: true,
+      thinkingParam: "thinking",
+      effortParam: "reasoning_effort",
+      effortValueMode: "passthrough",
+      outputFormat: "auto",
+    });
+
+    return (
+      <FormShell>
+        <output data-testid="reasoning-state">
+          {JSON.stringify(reasoning)}
+        </output>
+        <CodexFormFields
+          {...baseCodexProps()}
+          apiFormat="openai_chat"
+          codexChatReasoning={reasoning}
+          onCodexChatReasoningChange={setReasoning}
         />
       </FormShell>
     );
@@ -174,5 +208,86 @@ describe("CodexFormFields model fetch identity", () => {
     });
 
     expect(screen.queryByRole("button", { name: "Select model" })).toBeNull();
+  });
+});
+
+describe("CodexFormFields reasoning effort", () => {
+  it("restores the default parameter after effort support is disabled and re-enabled", () => {
+    renderReasoningForm();
+
+    const toggle = screen.getByRole("switch", {
+      name: "支持思考等级",
+    });
+    fireEvent.click(toggle);
+    expect(screen.getByTestId("reasoning-state")).toHaveTextContent(
+      '"supportsEffort":false',
+    );
+    expect(screen.getByTestId("reasoning-state")).toHaveTextContent(
+      '"effortParam":"none"',
+    );
+
+    fireEvent.click(toggle);
+    expect(screen.getByTestId("reasoning-state")).toHaveTextContent(
+      '"supportsEffort":true',
+    );
+    expect(screen.getByTestId("reasoning-state")).toHaveTextContent(
+      '"effortParam":"reasoning_effort"',
+    );
+  });
+});
+
+describe("CodexFormFields official Fast tier", () => {
+  function renderSpeedTierForm(
+    catalogModels: CodexFormFieldsProps["catalogModels"],
+  ) {
+    const onOfficialSpeedTiersChange = vi.fn();
+    render(
+      <FormShell>
+        <CodexFormFields
+          {...baseCodexProps()}
+          localProxyHeadersOverride={INITIAL_HEADERS_OVERRIDE}
+          catalogModels={catalogModels}
+          onCatalogModelsChange={vi.fn()}
+          officialSpeedTiers={true}
+          onOfficialSpeedTiersChange={onOfficialSpeedTiersChange}
+        />
+      </FormShell>,
+    );
+    return {
+      toggle: screen.getByRole("switch", { name: "保留官方 Fast 档" }),
+      onOfficialSpeedTiersChange,
+    };
+  }
+
+  // 没有模型列表时不生成目录、保存也不存这个设置（#10000）：开关锁住并说明原因，
+  // 不能让人打开后保存、再进来又是关的。
+  it("locks the switch and explains why when the card has no model list", () => {
+    const { toggle, onOfficialSpeedTiersChange } = renderSpeedTierForm([]);
+
+    expect(toggle).toBeDisabled();
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(
+      screen.getByText(
+        /这张卡没有模型列表：Fast 档只加在模型列表里的 GPT 模型上/,
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(onOfficialSpeedTiersChange).not.toHaveBeenCalled();
+  });
+
+  it("can be toggled once the model list has a model", () => {
+    const { toggle, onOfficialSpeedTiersChange } = renderSpeedTierForm([
+      { model: "gpt-5.5" },
+    ]);
+
+    expect(toggle).toBeEnabled();
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(
+      screen.queryByText(/Fast 档只加在模型列表里的 GPT 模型上/),
+    ).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(onOfficialSpeedTiersChange).toHaveBeenCalledWith(false);
   });
 });
