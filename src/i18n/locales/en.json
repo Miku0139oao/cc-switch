@@ -4167,7 +4167,29 @@
     "configJsonPreview": "Config JSON Preview",
     "configJsonPreviewHint": "The following configurations will be synced to each app (only the displayed fields will be overwritten, other custom settings will be preserved)",
     "availableAgents": "Available to agents",
-    "availableAgentsHint": "The API key and endpoint are managed once. Each selected agent gets its own provider and model mapping."
+    "availableAgentsHint": "The API key and endpoint are managed once. Each selected agent gets its own provider and model mapping.",
+    "preset": {
+      "newapi": {
+        "name": "NewAPI",
+        "description": "NewAPI is a self-hostable API gateway supporting Anthropic, OpenAI, Gemini and more"
+      },
+      "customGateway": {
+        "name": "Custom gateway",
+        "description": "A generic gateway where you supply the endpoint and models yourself"
+      }
+    },
+    "saveOnly": "Save only",
+    "createOnly": "Create only",
+    "saveOnlyHint": "Writes to the database only — nothing is published to any agent yet. Use Sync in the list when you are ready.",
+    "fetchModels": "Test connection and fetch models",
+    "fetchModelsSuccess": "Fetched {{count}} models",
+    "fetchModelsEmpty": "Connected, but the provider returned no models",
+    "fetchModelsFailed": "Could not fetch the model list",
+    "customModel": "Custom…",
+    "saveFailedStayOpen": "Save or sync failed; your input is kept — fix it and try again.",
+    "duplicateBlocked": "Another provider already uses the same endpoint and API key: {{name}}",
+    "appsRequired": "Pick at least one agent before saving",
+    "createAndSync": "Create and sync"
   },
   "omo": {
     "editProfile": "Edit OMO Config",
@@ -5559,7 +5581,13 @@
       "synced": "Synced to agents",
       "syncFailed": "Could not sync provider",
       "deleted": "Global provider deleted",
-      "deleteFailed": "Could not delete provider"
+      "deleteFailed": "Could not delete provider",
+      "noMatch": "No matching providers",
+      "noMatchHint": "Try a different keyword, or clear the search and agent filter.",
+      "clearFilters": "Clear filters",
+      "importSearch": "Search name or endpoint",
+      "models": "Models",
+      "savedOnly": "Saved; not published to any agent yet"
     }
   },
   "kimi": {

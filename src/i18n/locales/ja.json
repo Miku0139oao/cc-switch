@@ -4167,7 +4167,29 @@
     "configJsonPreview": "設定 JSON プレビュー",
     "configJsonPreviewHint": "以下は各アプリに同期される設定内容です（表示されているフィールドのみ上書きされ、他のカスタム設定は保持されます）",
     "availableAgents": "利用可能な Agent",
-    "availableAgentsHint": "API キーと Endpoint は 1 つだけ管理します。選択した Agent ごとにモデルを設定できます。"
+    "availableAgentsHint": "API キーと Endpoint は 1 つだけ管理します。選択した Agent ごとにモデルを設定できます。",
+    "preset": {
+      "newapi": {
+        "name": "NewAPI",
+        "description": "NewAPI は自前でホストできる API ゲートウェイです。Anthropic、OpenAI、Gemini などに対応します"
+      },
+      "customGateway": {
+        "name": "カスタムゲートウェイ",
+        "description": "Endpoint とモデルを自分で入力する汎用ゲートウェイ"
+      }
+    },
+    "saveOnly": "保存のみ",
+    "createOnly": "作成のみ",
+    "saveOnlyHint": "データベースに保存するだけで、どの Agent にも配布しません。準備ができたら一覧の「同期」を押してください。",
+    "fetchModels": "接続をテストしてモデルを取得",
+    "fetchModelsSuccess": "{{count}} 個のモデルを取得しました",
+    "fetchModelsEmpty": "接続は成功しましたが、モデルが返されませんでした",
+    "fetchModelsFailed": "モデル一覧を取得できませんでした",
+    "customModel": "カスタム…",
+    "saveFailedStayOpen": "保存または同期に失敗しました。入力は保持されています。修正して再試行してください。",
+    "duplicateBlocked": "同じ Endpoint と API キーのプロバイダーが既にあります：{{name}}",
+    "appsRequired": "保存するには少なくとも 1 つの Agent を選んでください",
+    "createAndSync": "作成して同期"
   },
   "omo": {
     "editProfile": "OMO 設定を編集",
@@ -5559,7 +5581,13 @@
       "synced": "各 Agent に同期しました",
       "syncFailed": "プロバイダーを同期できません",
       "deleted": "グローバルプロバイダーを削除しました",
-      "deleteFailed": "プロバイダーを削除できません"
+      "deleteFailed": "プロバイダーを削除できません",
+      "noMatch": "該当するプロバイダーがありません",
+      "noMatchHint": "別のキーワードを試すか、検索と Agent の絞り込みを解除してください。",
+      "clearFilters": "絞り込みを解除",
+      "importSearch": "名前または Endpoint を検索",
+      "models": "モデル",
+      "savedOnly": "保存しました。まだどの Agent にも配布していません"
     }
   },
   "kimi": {

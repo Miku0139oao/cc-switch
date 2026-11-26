@@ -489,6 +489,7 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/get_stack_fallback_events_for_request`, () =>
     success([]),
   ),
+  http.post(`${TAURI_ENDPOINT}/reset_circuit_breaker`, () => success(true)),
   http.post(`${TAURI_ENDPOINT}/get_circuit_breaker_stats`, () => success(null)),
   http.post(`${TAURI_ENDPOINT}/get_auto_failover_enabled`, () =>
     success(false),

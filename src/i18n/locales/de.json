@@ -4167,7 +4167,29 @@
     "configJsonPreview": "Vorschau der Konfigurations-JSON",
     "configJsonPreviewHint": "Die folgenden Konfigurationen werden mit jeder App synchronisiert (nur die angezeigten Felder werden überschrieben, andere benutzerdefinierte Einstellungen bleiben erhalten)",
     "availableAgents": "Für Agenten verfügbar",
-    "availableAgentsHint": "API-Schlüssel und Endpunkt werden zentral verwaltet. Jeder ausgewählte Agent erhält einen eigenen Anbieter mit Modellzuordnung."
+    "availableAgentsHint": "API-Schlüssel und Endpunkt werden zentral verwaltet. Jeder ausgewählte Agent erhält einen eigenen Anbieter mit Modellzuordnung.",
+    "preset": {
+      "newapi": {
+        "name": "NewAPI",
+        "description": "NewAPI ist ein selbst hostbares API-Gateway für Anthropic, OpenAI, Gemini und weitere Anbieter."
+      },
+      "customGateway": {
+        "name": "Eigenes Gateway",
+        "description": "Ein Gateway, für das du den Endpunkt und die Modelle selbst angibst."
+      }
+    },
+    "saveOnly": "Nur speichern",
+    "createOnly": "Nur erstellen",
+    "saveOnlyHint": "Speichert die Änderungen in der Datenbank. Über „Synchronisieren“ in der Liste kannst du sie später an die Agenten übertragen.",
+    "fetchModels": "Verbindung testen und Modelle abrufen",
+    "fetchModelsSuccess": "{{count}} Modelle abgerufen",
+    "fetchModelsEmpty": "Verbindung hergestellt. Der Anbieter hat keine Modelle zurückgegeben.",
+    "fetchModelsFailed": "Die Modellliste konnte nicht abgerufen werden.",
+    "customModel": "Benutzerdefiniert …",
+    "saveFailedStayOpen": "Speichern oder Synchronisieren fehlgeschlagen. Deine Eingaben bleiben erhalten. Korrigiere sie und versuche es erneut.",
+    "duplicateBlocked": "Ein anderer Anbieter verwendet bereits denselben Endpunkt und API-Schlüssel: {{name}}",
+    "appsRequired": "Wähle vor dem Speichern mindestens einen Agenten aus.",
+    "createAndSync": "Erstellen und synchronisieren"
   },
   "omo": {
     "editProfile": "OMO-Konfiguration bearbeiten",
@@ -4585,7 +4607,7 @@
       "stackNoteMembers": "{{names}} fügen {{count}} Modelle hinzu, die in /model mit dem Präfix ccs- erscheinen.",
       "desktopStackNoteMembers": "{{names}} fügen der Modellliste von Claude Desktop {{count}} Modelle hinzu, angezeigt als „Anbieter / Modell“.",
       "stackNoteEmpty": "Noch keine weiteren Anbieter hinzugefügt, daher ist nur der Standard verfügbar. Weitere können Sie später im Tab „Aggregation“ hinzufügen.",
-      "stackNoteNoFailover": "Die Aggregation hat kein Failover. Warteschlange und Einstellungen bleiben erhalten und kehren mit dem Routing zurück.",
+      "stackNoteNoFailover": "Aggregierte Modelle können eigene geordnete Fallback-Ketten verwenden. Warteschlange und Einstellungen des Routing-Modus bleiben getrennt erhalten.",
       "stackNoteRestartCodex": "Starten Sie {{app}} neu, um die aggregierten Modelle zu sehen; beenden Sie die Desktop-App vollständig und öffnen Sie sie erneut.",
       "stackSubagentLead": "Sub-Agenten folgen standardmäßig dem Hauptmodell; Sie können auch ein aggregiertes Modell wählen (später jederzeit in den Aggregations-Einstellungen änderbar).",
       "leaveStackNote": "Die aggregierten ccs--Modelle verschwinden aus /model. Die Aggregationsliste bleibt erhalten, und sie kehren zurück, wenn Sie wieder zu Aggregation wechseln. Wenn Sie eines davon verwenden, wählen Sie in /model ein reguläres Modell.",
@@ -5559,7 +5581,13 @@
       "synced": "Mit Agenten synchronisiert",
       "syncFailed": "Anbieter konnte nicht synchronisiert werden",
       "deleted": "Globaler Anbieter gelöscht",
-      "deleteFailed": "Anbieter konnte nicht gelöscht werden"
+      "deleteFailed": "Anbieter konnte nicht gelöscht werden",
+      "noMatch": "Keine passenden Anbieter",
+      "noMatchHint": "Versuche einen anderen Suchbegriff oder setze die Suche und den Agentenfilter zurück.",
+      "clearFilters": "Filter zurücksetzen",
+      "importSearch": "Nach Name oder Endpunkt suchen",
+      "models": "Modelle",
+      "savedOnly": "Gespeichert. Noch für keinen Agenten veröffentlicht."
     }
   },
   "kimi": {

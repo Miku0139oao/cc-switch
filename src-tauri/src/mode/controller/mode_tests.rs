@@ -410,11 +410,13 @@ async fn the_proxy_route_is_independent_of_the_direct_pointer() {
     exit(&state, &AppType::Claude).await.expect("exit");
 }
 
-/// 代理模式下不能切到官方供应商：经代理访问官方 API 可能导致账号被封。拒绝时路由和
-/// 客户端文件都保持原样。
+/// 本分支的策略与上游相反：官方供应商（API key 或 OAuth 订阅）在代理模式下也能切换，
+/// 只换代理路由。账号级凭据由 adapter 按账号注入，不会跨账号复用，所以经代理访问官方
+/// API 不会共用登录（见 official_provider_supports_proxy_takeover）。上游 v4.0.43 的
+/// #9873 钉的是旧的拒绝策略，合并时按本分支策略改写。
 #[tokio::test]
 #[serial]
-async fn proxy_mode_refuses_an_official_provider_and_keeps_the_route() {
+async fn proxy_mode_allows_an_official_provider_under_route() {
     let _home = Home::new();
     seed_settings(USER_SETTINGS);
     let mut official = claude("official", "https://api.anthropic.com", json!({}));
@@ -426,24 +428,24 @@ async fn proxy_mode_refuses_an_official_provider_and_keeps_the_route() {
     )
     .await;
     enter(&state, &AppType::Claude, false).await.expect("enter");
-    let before = settled_bytes();
 
-    let err = ProviderService::switch(&state, AppType::Claude, "official")
-        .expect_err("an official provider is refused in proxy mode");
+    let result = ProviderService::switch(&state, AppType::Claude, "official")
+        .expect("an official provider is routable in proxy mode");
 
-    assert!(
-        matches!(
-            err,
-            AppError::Localized {
-                key: "switch.official_blocked_by_proxy",
-                ..
-            }
-        ),
-        "{err:?}"
+    assert_eq!(
+        result.route.as_ref().map(|route| route.kind.clone()),
+        Some(RouteSwitchKind::Route)
     );
-    assert_eq!(mode(&AppType::Claude).proxy_route.as_deref(), Some("a"));
-    assert_eq!(in_use(&state, &AppType::Claude).as_deref(), Some("a"));
-    assert_eq!(settled_bytes(), before);
+    assert_eq!(
+        mode(&AppType::Claude).proxy_route.as_deref(),
+        Some("official")
+    );
+    // 代理模式只换路由：in_use 跟着路由走，直连指针保持原样。
+    assert_eq!(
+        in_use(&state, &AppType::Claude).as_deref(),
+        Some("official")
+    );
+    assert_eq!(direct(&state, &AppType::Claude).as_deref(), Some("a"));
     exit(&state, &AppType::Claude).await.expect("exit");
 }
 

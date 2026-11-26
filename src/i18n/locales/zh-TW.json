@@ -105,7 +105,7 @@
   "provider": {
     "connectivityCheck": "檢測連通",
     "tabProvider": "供應商",
-    "tabUniversal": "通用供應商",
+    "tabUniversal": "全域供應商",
     "noProviders": "還沒有供應商",
     "noProvidersDescription": "如果您已有設定，請點擊「匯入目前設定」，所有資料將安全儲存在 default 供應商中",
     "noProvidersDescriptionKeyFields": "切換供應商只會替換 Key、請求位址和模型，外掛程式等其他設定會保留在設定檔中，對所有供應商生效",
@@ -2381,7 +2381,7 @@
       "cloud": "雲端服務商",
       "local": "本機",
       "plugin": "外掛設定",
-      "universal": "統一供應商"
+      "universal": "全域供應商"
     },
     "crossApp": "跨應用",
     "groupHint": {
@@ -2401,7 +2401,7 @@
     "change": "更換",
     "backToPick": "返回選擇預設",
     "universalDetail": "同步到 Claude Code、Codex、Gemini CLI",
-    "manageUniversal": "管理現有的統一供應商 ›",
+    "manageUniversal": "管理現有的全域供應商 ›",
     "loginWith": {
       "deepseek": "使用 DeepSeek 帳號登入",
       "workbuddy": "用 WorkBuddy 帳號登入",
@@ -4121,14 +4121,14 @@
   },
   "universalProvider": {
     "duplicate": "複製",
-    "duplicatedAndSynced": "通用供應商已複製並同步",
-    "duplicateError": "複製通用供應商失敗",
-    "title": "通用供應商",
-    "description": "通用供應商可以同時管理 Claude、Codex 和 Gemini 的設定。修改後會自動同步至所有啟用的應用程式。",
-    "add": "新增通用供應商",
-    "edit": "編輯通用供應商",
-    "empty": "還沒有通用供應商",
-    "emptyHint": "點擊下方「新增通用供應商」按鈕建立一個",
+    "duplicatedAndSynced": "全域供應商已複製並同步",
+    "duplicateError": "複製全域供應商失敗",
+    "title": "全域供應商",
+    "description": "全域供應商可以同時管理 Claude、Codex 和 Gemini 的設定。修改後會自動同步至所有啟用的應用程式。",
+    "add": "新增全域供應商",
+    "edit": "編輯全域供應商",
+    "empty": "還沒有全域供應商",
+    "emptyHint": "點擊下方「新增全域供應商」按鈕建立一個",
     "selectPreset": "選擇預設類型",
     "name": "名稱",
     "namePlaceholder": "例如：我的 NewAPI",
@@ -4145,20 +4145,20 @@
     "synced": "已同步至所有應用程式",
     "syncError": "同步失敗",
     "noAppsEnabled": "未啟用任何應用程式",
-    "added": "通用供應商已新增",
-    "addedAndSynced": "通用供應商已新增並同步",
-    "addedButSyncFailed": "通用供應商已新增，但同步失敗",
-    "updated": "通用供應商已更新",
-    "deleted": "通用供應商已刪除",
-    "addFailed": "通用供應商新增失敗",
+    "added": "全域供應商已新增",
+    "addedAndSynced": "全域供應商已新增並同步",
+    "addedButSyncFailed": "全域供應商已新增，但同步失敗",
+    "updated": "全域供應商已更新",
+    "deleted": "全域供應商已刪除",
+    "addFailed": "全域供應商新增失敗",
     "hint": "跨應用程式通用設定，自動同步至 Claude/Codex/Gemini",
     "manage": "管理",
-    "loadError": "載入通用供應商失敗",
-    "saveError": "儲存通用供應商失敗",
-    "deleteError": "刪除通用供應商失敗",
-    "deleteConfirmTitle": "刪除通用供應商",
+    "loadError": "載入全域供應商失敗",
+    "saveError": "儲存全域供應商失敗",
+    "deleteError": "刪除全域供應商失敗",
+    "deleteConfirmTitle": "刪除全域供應商",
     "deleteConfirmDescription": "確定要刪除 \"{{name}}\" 嗎？這將同時刪除它在各應用程式中產生的供應商設定。",
-    "syncConfirmTitle": "同步通用供應商",
+    "syncConfirmTitle": "同步全域供應商",
     "syncConfirmDescription": "同步 \"{{name}}\" 將會覆寫 Claude、Codex 和 Gemini 中關聯的供應商設定。確定要繼續嗎？",
     "syncConfirm": "同步",
     "saveAndSync": "儲存並同步",
@@ -4167,7 +4167,29 @@
     "configJsonPreview": "設定 JSON 預覽",
     "configJsonPreviewHint": "以下是將要同步至各應用程式的設定內容（僅覆寫顯示的欄位，保留其他自訂設定）",
     "availableAgents": "可用於哪些 Agent",
-    "availableAgentsHint": "API Key 與 Endpoint 只管理一份；勾選的 Agent 會各自產生 provider，模型可分別設定。"
+    "availableAgentsHint": "API Key 與 Endpoint 只管理一份；勾選的 Agent 會各自產生 provider，模型可分別設定。",
+    "preset": {
+      "newapi": {
+        "name": "NewAPI",
+        "description": "NewAPI 是可自架的 API 閘道，支援 Anthropic、OpenAI、Gemini 等多種協定"
+      },
+      "customGateway": {
+        "name": "自訂閘道",
+        "description": "自行填寫 Endpoint 與模型的通用閘道"
+      }
+    },
+    "saveOnly": "只儲存",
+    "createOnly": "只建立",
+    "saveOnlyHint": "只寫入資料庫，不發佈給任何 Agent。之後可在列表按「同步」發佈。",
+    "fetchModels": "測試連線並取得模型",
+    "fetchModelsSuccess": "已取得 {{count}} 個模型",
+    "fetchModelsEmpty": "連線成功，但供應商沒有回傳模型",
+    "fetchModelsFailed": "無法取得模型清單",
+    "customModel": "自訂…",
+    "saveFailedStayOpen": "儲存或同步失敗；輸入已保留，請修正後再試。",
+    "duplicateBlocked": "已有相同的 Endpoint 與 API Key：{{name}}",
+    "appsRequired": "至少選擇一個 Agent 才能儲存",
+    "createAndSync": "建立並同步"
   },
   "omo": {
     "editProfile": "編輯 OMO 設定",
@@ -5559,7 +5581,13 @@
       "synced": "已同步到各 Agent",
       "syncFailed": "同步供應商失敗",
       "deleted": "全域供應商已刪除",
-      "deleteFailed": "刪除供應商失敗"
+      "deleteFailed": "刪除供應商失敗",
+      "noMatch": "沒有符合的供應商",
+      "noMatchHint": "換個關鍵字，或清除搜尋與 Agent 篩選。",
+      "clearFilters": "清除篩選",
+      "importSearch": "搜尋名稱或 Endpoint",
+      "models": "模型",
+      "savedOnly": "已儲存；尚未發佈給任何 Agent"
     }
   },
   "kimi": {
